@@ -206,10 +206,17 @@ button[role="tab"][aria-selected="true"] { color: var(--accent); border-bottom-c
 .viewport-hints small { font-size: 10px; color: #96aabc; white-space: nowrap }
 .zoom-controls { margin-bottom: 2px }
 .extrude-handle { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 5px; color: var(--accent); background: #173541 !important; border: 1px solid #6cbeda !important; box-shadow: 0 0 12px #48d5fa55; transform: translate(-50%, -50%); position: absolute; z-index: 4; touch-action: none }
-.hand-point, .snap-marker, .orbit-indicator { color: var(--accent); position: absolute; transform: translate(-50%, -50%); display: grid; place-items: center; border: 1px solid currentColor; width: 21px; height: 21px; border-radius: 50%; box-shadow: 0 0 12px #5bdaed6b }
-.hand-point span, .snap-marker span { position: absolute; top: 24px; font-size: 9px; white-space: nowrap; color: var(--text); background: #14222b; padding: 2px 4px; border-radius: 3px; text-transform: capitalize }
+.hand-point, .orbit-indicator { color: var(--accent); position: absolute; transform: translate(-50%, -50%); display: grid; place-items: center; border: 1px solid currentColor; width: 21px; height: 21px; border-radius: 50%; box-shadow: 0 0 9px #5bdaed47 }
+.hand-point { transition: color .12s ease; }
+.hand-point span { position: absolute; top: 24px; font-size: 10px; white-space: nowrap; color: var(--text); background: #14222b; padding: 2px 4px; border-radius: 3px; }
 .hand-point.pose-pinch, .hand-point.pose-scissors { color: var(--amber) }
-.hand-point.pose-fist, .snap-marker { color: var(--green) }
+.hand-point.pose-fist { color: var(--green) }
+.snap-marker { position: absolute; z-index: 1; transform: translate(-50%, -50%); display: grid; place-items: center; color: #a1f2cc; width: 15px; height: 15px; }
+.snap-marker i { width: 9px; height: 9px; transform: rotate(45deg); border: 1px solid currentColor; border-radius: 2px; background: #16362d; box-shadow: 0 0 7px #81eac266; animation: snap-in .13s ease-out; }
+.snap-marker span { position: absolute; bottom: calc(100% + 4px); padding: 2px 5px; border: 1px solid #476658; border-radius: 4px; color: #c4f5dc; background: #162927f2; font-size: 10px; white-space: nowrap; }
+.snap-marker[data-snap="grid"] { opacity: .64; }
+.snap-marker[data-snap="grid"] i { width: 4px; height: 4px; background: currentColor; animation: none; }
+@keyframes snap-in { from { opacity: 0; } to { opacity: 1; } }
 .orbit-indicator { width: 62px; height: 62px; border-style: dashed }
 .deletion-boundary { position: absolute; inset: 4px; border: 2px dashed var(--red); box-shadow: inset 0 0 20px #e66a6d35; border-radius: 6px }
 .deletion-boundary span { position: absolute; left: 9px; top: 59px; color: #ffc5c2; padding: 5px 8px; background: #5d303c; border-radius: 4px; font-size: 11px }

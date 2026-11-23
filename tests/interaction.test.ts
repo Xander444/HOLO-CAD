@@ -75,6 +75,7 @@ function fixture(bodies: Body[] = []) {
   })
   const orbitCalls: number[] = []
   const stage: StagePort = {
+    dimensions: [1000, 800],
     world: ([x, y], frame) => onPlane(frame, [(x - .5) * 200, (.5 - y) * 200]),
     screen: ([x, y, z]) => [.5 + x / 200, .5 - y / 200 - z / 500],
     axisDelta: (from, to) => (from[1] - to[1]) * 150,
@@ -268,6 +269,118 @@ test('snap asks attach or fuse and failed disjoint fusion preserves both solids'
   await wait()
   assert.equal(model.get().project.objects.length, 2)
   assert.match(model.get().error!, /form one solid/)
+})
+
+test('sketch snaps hold nearby endpoints and preserve their exact slope over auto axis alignment', async () => {
+  const { controller, model, stage, wait } = fixture()
+  for (const x of [40, 42]) {
+    await model.commit({ type: 'sketch', sketch: { frame: planeFrame('XY'), geometry: { kind: 'line', at: [x, 2.6], angle: 90, length: 12 } } })
+  }
+  controller.setTool('line')
+  // Approach the first endpoint and then move closer to the other, inside the release radius.
+  assert.ok(controller.pointerStart(stage.screen([0, 0, 0])))
+  const drag = (x: number, y: number, bypass = false) => {
+    controller.pointerMove(stage.screen([x, y, 0]), 1000, bypass)
+    const { preview } = controller.get()
+    assert.ok(preview?.kind === 'sketch')
+    const [endX, endY] = sketchPath(preview.sketch).at(-1)!
+    return { x: endX, y: endY, snap: preview.snap?.kind }
+  }
+  for (const x of [39.2, 42.1]) {
+    const point = drag(x, 2.68)
+    assert.equal(point.snap, 'endpoint')
+    closeTo(point.x, 40)
+    closeTo(point.y, 2.6)
+  }
+  closeTo(drag(42.35, 2.68).x, 42)
+  const free = drag(42.35, 2.68, true)
+  assert.equal(free.snap, undefined)
+  closeTo(free.x, 42.35)
+  closeTo(free.y, 2.68)
+  controller.pointerEnd()
+  await wait()
+  const sketch = controller.object
+  assert.ok(sketch?.kind === 'sketch')
+  closeTo(sketchPath(sketch.sketch).at(-1)![1], 2.68)
+})
+
+test('axis guidance holds across light jitter and releases beyond its screen-space range', () => {
+  const { controller, stage } = fixture()
+  controller.setTool('line')
+  assert.ok(controller.pointerStart(stage.screen([0, 0, 0])))
+  for (const [y, expected] of [[1.2, 'axis'], [1.8, 'axis'], [3.6, 'grid']] as const) {
+    controller.pointerMove(stage.screen([40, y, 0]))
+    const preview = controller.get().preview
+    assert.ok(preview?.kind === 'sketch')
+    assert.equal(preview.snap?.kind, expected)
+    const [x, endY] = sketchPath(preview.sketch).at(-1)!
+    closeTo(x, 40)
+    closeTo(endY, expected === 'axis' ? 0 : 4)
+  }
+})
+
+test('contact snapping holds a nearby face, respects the movement plane, and releases to free placement', () => {
+  const base = fixtureBox('Base')
+  const moving = fixtureBox('Moving', [35, 0, 0])
+  const { controller } = fixture([base, moving])
+  controller.setTool('move')
+  assert.ok(controller.pointerStart([.675, .5]))
+  for (const [x, active, expected] of [[.603, true, 20], [.609, true, 20], [.614, false, 23], [.604, true, 20], [.609, false, 21.8]] as const) {
+    controller.pointerMove([x, .5], 1000, expected === 21.8)
+    const preview = controller.get().preview
+    assert.ok(preview?.kind === 'move')
+    assert.equal(preview.snap?.kind === 'face', active)
+    closeTo(preview.to.position[0], expected)
+  }
+
+  const lifted = fixtureBox('Lifted', [35, 0, 20.4])
+  const xy = fixture([base, lifted]).controller
+  xy.setTool('move')
+  assert.ok(xy.pointerStart([.675, .5]))
+  xy.pointerMove([.5, .5])
+  const preview = xy.get().preview
+  assert.ok(preview?.kind === 'move')
+  assert.equal(preview.snap, undefined)
+  closeTo(preview.to.position[2], 20.4)
+})
+
+test('a released move keeps its exact preview visible until the model installs the new placement', async () => {
+  const body = fixtureBox('Base')
+  const { controller, model, wait } = fixture([body])
+  const commit = model.commit
+  let release!: () => void
+  const worker = new Promise<void>(resolve => { release = resolve })
+  model.commit = async command => { await worker; return commit(command) }
+  controller.setTool('move')
+  assert.ok(controller.pointerStart([.5, .5]))
+  controller.pointerMove([.618, .46])
+  const preview = controller.get().preview
+  assert.ok(preview?.kind === 'move')
+  controller.pointerEnd()
+  assert.equal(controller.get().preview, preview)
+  assert.deepEqual(model.get().project.objects[0].transform.position, [0, 0, 0])
+  release()
+  await wait()
+  assert.deepEqual(model.get().project.objects[0].transform, preview.to)
+  assert.equal(controller.get().preview, undefined)
+  await model.step('undo')
+  assert.deepEqual(model.get().project.objects[0], body)
+})
+
+test('a small deliberate hand drag places the body while stationary jitter does not', async () => {
+  const { frame, model, wait } = fixture([fixtureBox('Base')])
+  const drag = (distance: number) => {
+    frame([hand(1, 'open', [.5, .5])], 9)
+    frame([hand(1, 'fist', [.5, .5])], 7)
+    frame([hand(1, 'fist', [.5 + distance, .5])], 5)
+    frame([hand(1, 'open', [.5 + distance, .5])], 5)
+  }
+  drag(.004)
+  await wait()
+  assert.deepEqual(model.get().project.objects[0].transform.position, [0, 0, 0])
+  drag(.012)
+  await wait()
+  assert.deepEqual(model.get().project.objects[0].transform.position, [2, 0, 0])
 })
 
 test('scissors split a selected solid and history restores complete modeling state', async () => {

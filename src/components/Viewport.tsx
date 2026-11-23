@@ -8,6 +8,7 @@ import type { WorkspaceModel } from '../app/model'
 import type { InteractionController } from '../interactions/controller'
 import type { InteractionState } from '../interactions/types'
 import type { Settings } from '../interactions/settings'
+import { pixelDistance } from '../interactions/snap'
 import type { ScreenPoint } from '../vision/tracking'
 import type { Axis, Entity, PlaneName, Vec3 } from '../models/project'
 import { add, closedSketch, mul, sketchPath } from '../models/math'
@@ -24,6 +25,8 @@ export function Viewport({ model, controller, interaction, settings, showAdvance
   const host = useRef<HTMLDivElement>(null)
   const instance = useRef<CadScene | null>(null)
   const drag = useRef<Drag | undefined>(undefined)
+  const dragFrame = useRef<number | undefined>(undefined)
+  const pendingDrag = useRef<{ point: ScreenPoint; bypass: boolean } | undefined>(undefined)
   const rightDrag = useRef(false)
   const [cameraError, setCameraError] = useState<string>()
   const [version, redraw] = useState(0)
@@ -48,18 +51,24 @@ export function Viewport({ model, controller, interaction, settings, showAdvance
     } catch (e) {
       setCameraError(e instanceof Error ? e.message : 'WebGL could not be started.')
     }
-    return () => { scene?.close(); instance.current = null; controller.stage = undefined }
+    return () => {
+      if (dragFrame.current !== undefined) cancelAnimationFrame(dragFrame.current)
+      dragFrame.current = undefined
+      pendingDrag.current = undefined
+      scene?.close(); instance.current = null; controller.stage = undefined
+    }
   }, [controller])
 
   const { objects } = model.project
-  const { preview, axis, plane, tool, hover, aimedEdge, dialog } = interaction
+  const { preview, axis, plane, tool, hover, aimedEdge, dialog, mode } = interaction
+  const gripping = mode === 'Grabbing'
   useEffect(() => {
     instance.current?.update({
       objects, meshes: model.meshes, selection: model.selection, hover, aimedEdge, tool, plane, axis, grid,
-      snap: settings.snap && settings.snapTypes.grid ? settings.grid : undefined, preview, busy: model.busy,
+      snap: settings.snap && settings.snapTypes.grid ? settings.grid : undefined, preview, busy: model.busy, gripping,
       reducedMotion: settings.reducedMotion || matchMedia('(prefers-reduced-motion: reduce)').matches,
     })
-  }, [objects, model.meshes, model.selection, model.busy, hover, aimedEdge, tool, plane, axis, grid, settings.snap, settings.snapTypes.grid, settings.grid, settings.reducedMotion, preview, mounted])
+  }, [objects, model.meshes, model.selection, model.busy, hover, aimedEdge, tool, plane, axis, grid, settings.snap, settings.snapTypes.grid, settings.grid, settings.reducedMotion, preview, gripping, mounted])
 
   const previousProject = useRef('')
   useEffect(() => {
@@ -74,29 +83,44 @@ export function Viewport({ model, controller, interaction, settings, showAdvance
   const startDrag = (event: ReactPointerEvent, handle = false) => {
     const scene = instance.current
     if (!scene || (!handle && !(event.target instanceof HTMLCanvasElement))) return
+    scene.stopMotion()
     setContext(undefined)
     if (interaction.gesture) controller.cancel()
     const p = point(event)
     controller.mouse(true)
-    const stageHandled = event.button === 0 && (handle || !scene.gizmoAxis) && controller.pointerStart(p, handle)
+    const stageHandled = event.button === 0 && (handle || !scene.gizmoAxis) && controller.pointerStart(p, handle, event.altKey)
     drag.current = { id: event.pointerId, start: p, button: event.button, handled: stageHandled, moved: false }
     rightDrag.current = false
     if (stageHandled) {
       scene.enableOrbit(false)
       event.preventDefault()
       event.stopPropagation()
-      ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
+      const capture = event.target instanceof HTMLCanvasElement ? event.target : event.currentTarget
+      capture.setPointerCapture(event.pointerId)
     }
   }
+  const clearDragFrame = () => {
+    if (dragFrame.current !== undefined) cancelAnimationFrame(dragFrame.current)
+    dragFrame.current = undefined
+    pendingDrag.current = undefined
+  }
   const moveDrag = (event: ReactPointerEvent) => {
-    if (!instance.current || !host.current) return
+    const scene = instance.current
+    if (!scene || !host.current) return
     const p = point(event)
     const run = drag.current
     if (run?.id === event.pointerId) {
-      const rect = host.current.getBoundingClientRect()
-      if (Math.hypot((p[0] - run.start[0]) * rect.width, (p[1] - run.start[1]) * rect.height) > 4) run.moved = true
+      if (pixelDistance(p, run.start, scene.dimensions) > 4) run.moved = true
       if (run.button === 2 && run.moved) rightDrag.current = true
-      if (run.handled && run.moved) controller.pointerMove(p)
+      if (run.handled && run.moved) {
+        pendingDrag.current = { point: p, bypass: event.altKey }
+        if (dragFrame.current === undefined) dragFrame.current = requestAnimationFrame(time => {
+          dragFrame.current = undefined
+          const last = pendingDrag.current
+          pendingDrag.current = undefined
+          if (last) controller.pointerMove(last.point, time, last.bypass)
+        })
+      }
     } else if (event.target instanceof HTMLCanvasElement) controller.hover(p)
   }
   const endDrag = (event: ReactPointerEvent) => {
@@ -104,17 +128,22 @@ export function Viewport({ model, controller, interaction, settings, showAdvance
     const scene = instance.current
     if (!scene) return
     if (!run || run.id !== event.pointerId) return
+    const p = point(event)
+    const moved = run.moved || pixelDistance(p, run.start, scene.dimensions) > 4
     drag.current = undefined
+    clearDragFrame()
     controller.mouse(false)
     if (run.handled) {
+      if (moved) controller.pointerMove(p, performance.now(), event.altKey)
       controller.pointerEnd()
       scene.enableOrbit(true)
       return
     }
-    if (!run.moved && run.button === 0 && !scene.gizmoDragging) controller.click(point(event), event.shiftKey || event.metaKey || event.ctrlKey)
+    if (!moved && run.button === 0 && !scene.gizmoDragging) controller.click(p, event.shiftKey || event.metaKey || event.ctrlKey, event.altKey)
   }
   const cancelDrag = () => {
     drag.current = undefined
+    clearDragFrame()
     controller.mouse(false)
     controller.cancel()
     instance.current?.enableOrbit(true)

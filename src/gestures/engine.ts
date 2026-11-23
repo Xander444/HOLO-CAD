@@ -159,7 +159,8 @@ export class GestureEngine {
       }
       a.release ??= time
       if (time - a.release < 76) return
-      const moved = a.mode === 'select' ? a.maxMovement < .065 : a.mode === 'orbit' || a.maxMovement >= move
+      const minimum = a.mode === 'grab' ? .01 / options.sensitivity : move
+      const moved = a.mode === 'select' ? a.maxMovement < .065 : a.mode === 'orbit' || a.maxMovement >= minimum
       this.active = undefined
       this.coolingUntil = time + options.cooldown
       if (moved && time - a.began > 105) this.emit({ type: 'end', mode: a.mode, points: a.points })

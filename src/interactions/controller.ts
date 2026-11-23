@@ -1,10 +1,11 @@
 import type { BodyGeometry, FaceReference } from '../cad/kernel'
+import type { RenderGeometry } from '../cad/protocol'
 import { applyFeature, descendants } from '../commands/commands'
 import type { Command, FeatureCommand } from '../commands/commands'
 import type { WorkspaceModel } from '../app/model'
 import {
   AXES, DEG, EPS, add, axisIndex, closedSketch, cross, dot, extendLine, formatDimension, lineGeometry,
-  midpoint, mul, norm, orientedFrame, planeFrame, planeNormal, sketchPath, sub, toPlane, UNIT_FACTORS,
+  midpoint, mul, norm, onPlane, orientedFrame, planeFrame, planeNormal, sketchPath, sub, toPlane, UNIT_FACTORS,
 } from '../models/math'
 import { defaultPrimitive, entityType } from '../models/project'
 import { parameters } from '../models/parameters'
@@ -16,12 +17,19 @@ import type { Pose, ScreenPoint, TrackedHand } from '../vision/tracking'
 import type { Event, Context, GestureMode } from '../gestures/engine'
 import { objectNameKey, parseIntent, primitiveFromIntent, quantity } from '../voice/parser'
 import type { AlignMode, FeatureFace, Intent, WorkspacePanel } from '../voice/parser'
-import { alignBounds, faceAt, snapContact, snapPoint } from './snap'
+import { alignBounds, collectSnapTargets, faceAt, roundToGrid, snapContact, snapLineAxis, snapNames, snapPoint } from './snap'
+import type { Snap, SnapTargets } from './snap'
 import type { Settings } from './settings'
 import type { Alignment, Chamfer, Cut, CutChoice, Dialog, Extrusion, FeatureDraft, Hole, HolePattern, InteractionState, Join, Mode, Pick as StagePick, PickedEdge, Preview, StagePort, Tool } from './types'
 
-type Drawing = { kind: 'draw'; tool: Tool; frame: Frame; start: Vec2; source?: SketchObject; exact?: number }
-type Move = { kind: 'move'; object: Entity; ids: string[]; start: ScreenPoint; origin: Vec3; outside?: number; contact?: Join }
+type Drawing = {
+  kind: 'draw'; tool: Tool; frame: Frame; start: Vec2; source?: SketchObject; exact?: number;
+  firstSnap?: Snap; endSnap?: Snap; axisSnap?: 0 | 1;
+}
+type Move = {
+  kind: 'move'; object: Entity; ids: string[]; start: ScreenPoint; origin: Vec3; outside?: number;
+  contact?: Join; heldContact?: string; fromHand: boolean;
+}
 type Active = Drawing | Move |
   { kind: 'extrude'; dialog: Extrusion; start: ScreenPoint; depth: number } |
   { kind: 'cut'; points: ScreenPoint[]; initial: Cut } | { kind: 'orbit'; previous: ScreenPoint } |
@@ -74,6 +82,7 @@ export class InteractionController {
   private featureTimer?: ReturnType<typeof setTimeout>
   private featureSource?: Body
   private pointerEdge?: PickedEdge
+  private sketchTargets?: { objects: Entity[]; meshes: RenderGeometry; targets: SnapTargets }
 
   constructor(readonly model: Model, private actions: Actions) {}
   get = () => this.snapshot
@@ -123,6 +132,7 @@ export class InteractionController {
   }
 
   cancel = () => {
+    if (this.active?.kind === 'orbit') this.stage?.stopMotion?.()
     this.active = undefined
     this.sketchPoints = []
     this.measured = []
@@ -201,56 +211,71 @@ export class InteractionController {
     void this.commit({ type: 'transform', ids, target, value, label })
   }
 
-  private world(p: ScreenPoint, frame: Frame, snap = true) {
-    const world = this.stage?.world(p, frame)
-    if (!world || !this.stage || !snap) return world
-    const bodies: BodyGeometry[] = []
-    const paths: Vec3[][] = []
-    for (const o of this.entities) {
-      if (o.hidden) continue
-      if (o.kind === 'body' && this.meshes[o.id]) bodies.push(this.meshes[o.id])
-      else if (o.kind === 'sketch') paths.push(sketchPath(o.sketch).map(q => transformPoint(q, matrixOf(o.transform))))
+  private world(p: ScreenPoint, frame: Frame, bypass = false, held?: Snap) {
+    const stage = this.stage
+    const raw = stage?.world(p, frame)
+    if (!stage || !raw) return
+    const settings = this.settings
+    if (bypass || !settings.snap) return { raw, point: raw }
+    const objects = this.entities, meshes = this.meshes
+    if (this.sketchTargets?.objects !== objects || this.sketchTargets.meshes !== meshes) {
+      this.sketchTargets = { objects, meshes, targets: collectSnapTargets(objects, meshes) }
     }
-    return snapPoint(world, frame, this.settings, q => this.stage!.screen(q), bodies, paths).point
+    return { raw, ...snapPoint(raw, frame, settings, stage, this.sketchTargets.targets, held) }
   }
-  private localPoint(p: ScreenPoint, frame: Frame, source?: SketchObject): Vec2 | undefined {
+  private localPoint(p: ScreenPoint, frame: Frame, source?: SketchObject, bypass = false, held?: Snap) {
     const worldFrame = source ? transformFrame(frame, source.transform) : frame
-    const point = this.world(p, worldFrame)
-    if (point) return toPlane(frame, source ? transformPoint(point, matrixOf(source.transform).invert()) : point)
+    const hit = this.world(p, worldFrame, bypass, held)
+    if (!hit) return
+    const inverse = source && matrixOf(source.transform).invert()
+    const local = (point: Vec3) => toPlane(frame, inverse ? transformPoint(point, inverse) : point)
+    return { point: local(hit.point), raw: local(hit.raw), snap: hit.snap }
   }
-  private startDraw(tool: Tool, p: ScreenPoint, source?: SketchObject) {
+  private startDraw(tool: Tool, p: ScreenPoint, source?: SketchObject, bypass = false) {
     const frame = source?.sketch.frame ?? this.frame
-    const start = this.localPoint(p, frame, source)
+    const start = this.localPoint(p, frame, source, bypass)
     if (!start) return false
-    this.active = { kind: 'draw', tool, start, frame, source }
+    this.active = { kind: 'draw', tool, start: start.point, firstSnap: start.snap, frame, source }
     this.patch({ dialog: undefined, mode: modeTool[tool] ?? 'SketchEditing', message: '' })
     return true
   }
-  private draw(active: Drawing, p: ScreenPoint, first?: ScreenPoint) {
-    const point = this.localPoint(p, active.frame, active.source)
-    const a = first ? this.localPoint(first, active.frame, active.source) : active.start
-    if (!point || !a) return
+  private draw(active: Drawing, p: ScreenPoint, first?: ScreenPoint, bypass = false) {
+    const { frame, source } = active
+    const end = this.localPoint(p, frame, source, bypass, active.endSnap)
+    const start = first ? this.localPoint(first, frame, source, bypass, active.firstSnap) : undefined
+    if (!end || (first && !start)) return
+    if (start) active.firstSnap = start.snap
+    const a = start?.point ?? active.start
+    const point = end.point
     const dx = point[0] - a[0], dy = point[1] - a[1]
+    active.endSnap = end.snap
+    let snap = end.snap
     let geometry: Geometry
     let label: string | undefined
     switch (active.tool) {
       case 'line': {
-        const snapped = this.settings.snap && this.settings.snapTypes.axis
-        const g = lineGeometry(a, point, snapped)
         const axis = this.snapshot.axis
+        const previous = active.axisSnap
+        active.axisSnap = undefined
         if (axis) {
           const dir = AXES[axis]
-          const x = dot(dir, active.frame.u), y = dot(dir, active.frame.v)
+          const x = dot(dir, frame.u), y = dot(dir, frame.v)
           if (Math.abs(x) + Math.abs(y) < EPS) {
-            this.patch({ message: axis + ' is perpendicular to the active plane.' })
+            this.patch({ preview: undefined, message: axis + ' is perpendicular to the active plane.' })
             return
           }
-          const along = x * dx + y * dy
-          g.angle = Math.atan2(y * Math.sign(along), x * Math.sign(along)) / DEG
-          g.length = Math.abs(along)
+          const along = (x * dx + y * dy) / (x * x + y * y)
+          const constrained: Vec2 = [a[0] + x * along, a[1] + y * along]
+          geometry = lineGeometry(a, constrained)
           label = axis + ' axis'
-        } else if (snapped && Math.abs(g.angle % 90) < EPS) label = 'Axis snap'
-        geometry = g
+          if (Math.hypot(point[0] - constrained[0], point[1] - constrained[1]) > EPS) snap = undefined
+        } else {
+          const settings = this.settings
+          const guide = !bypass && this.stage && settings.snap && settings.snapTypes.axis && (!snap || snap.kind === 'grid') ?
+            snapLineAxis(a, end.raw, point, p => onPlane(frame, p), this.stage, settings.snapStrength, previous) : undefined
+          geometry = lineGeometry(a, guide?.point ?? point)
+          if (guide) { active.axisSnap = guide.axis; snap = guide.snap }
+        }
         break
       }
       case 'rectangle': {
@@ -264,8 +289,12 @@ export class InteractionController {
       case 'arc': geometry = { kind: 'arc', at: a, radius: Math.hypot(dx, dy), startAngle: Math.atan2(dy, dx) / DEG, sweep: 90 }; break
       default: geometry = { kind: 'point', at: point }
     }
-    if (active.exact !== undefined) geometry = preciseSketchDimension(geometry, active.exact)
-    this.patch({ preview: { kind: 'sketch', sketch: { frame: active.frame, geometry }, transform: active.source?.transform, label } })
+    if (active.exact !== undefined) {
+      geometry = preciseSketchDimension(geometry, active.exact)
+      snap = undefined
+    }
+    this.patch({ preview: { kind: 'sketch', sketch: { frame, geometry }, transform: source?.transform, label, snap },
+      message: snap && snap.kind !== 'grid' ? snapNames[snap.kind] + ' snap' : '' })
   }
   private async finishDraw(active: Drawing) {
     const preview = this.snapshot.preview
@@ -311,32 +340,34 @@ export class InteractionController {
     if (await this.commit({ type: 'extrude', id, depth })) this.patch({ tool: 'select' })
   }
 
-  private beginMove(object: Entity, point: ScreenPoint) {
+  private beginMove(object: Entity, point: ScreenPoint, fromHand = false) {
     const ids = this.selectedIds.includes(object.id) ? this.selectedIds : [object.id]
     this.model.select(ids)
     const origin = this.meshes[object.id] ? midpoint(...this.meshes[object.id].bounds) :
       object.kind === 'sketch' ? this.sketchCenter(object) : object.transform.position
-    this.active = { kind: 'move', object, ids, start: point, origin }
+    this.active = { kind: 'move', object, ids, start: point, origin, fromHand }
     this.patch({ dialog: undefined, mode: 'Grabbing', preview: undefined, message: '' })
   }
-  private move(active: Move, point: ScreenPoint, time: number) {
+  private move(active: Move, point: ScreenPoint, time: number, bypass: boolean) {
     if (!this.stage) return
     const axis = this.snapshot.axis
+    const settings = this.settings
     let delta: Vec3
+    let motionPlane: Frame | undefined
     if (axis) delta = mul(AXES[axis], this.stage.axisDelta(active.start, point, active.origin, AXES[axis]))
     else {
-      const frame = planeFrame(this.snapshot.plane, active.origin)
+      let frame = planeFrame(this.snapshot.plane, active.origin)
       let from = this.stage.world(active.start, frame)
       let to = this.stage.world(point, frame)
       if (!from || !to) {
-        const fallback = orientedFrame(active.origin, this.stage.direction())
-        from = this.stage.world(active.start, fallback)
-        to = this.stage.world(point, fallback)
+        frame = orientedFrame(active.origin, this.stage.direction())
+        from = this.stage.world(active.start, frame)
+        to = this.stage.world(point, frame)
       }
       if (!from || !to) return
       delta = sub(to, from)
+      motionPlane = { ...frame, origin: [0, 0, 0] }
     }
-    if (this.settings.snap && this.settings.snapTypes.grid) delta = delta.map(v => Math.round(v / this.settings.grid) * this.settings.grid) as Vec3
     const beyond = point.some(value => value < -.018 || value > 1.018)
     active.outside = beyond ? active.outside ?? time : undefined
     const danger = active.outside !== undefined && time - active.outside >= 190
@@ -344,15 +375,22 @@ export class InteractionController {
     const owned = descendants(this.entities, active.ids)
     const candidates = this.entities.filter(o => !o.hidden && !owned.has(o.id) && this.meshes[o.id] && o.id !== active.object.parent)
       .map(o => ({ id: o.id, mesh: this.meshes[o.id] }))
-    const snap = !danger && this.settings.snap && moving ? snapContact(
-      moving, delta, candidates, this.settings.snapStrength, axis, this.settings.snapTypes,
-    ) : undefined
-    const position = add(active.object.transform.position, snap?.delta ?? delta)
-    active.contact = snap ? { kind: 'join', target: active.object.id, reference: snap.id, position, face: snap.face } : undefined
+    const contact = !bypass && !beyond && settings.snap && moving ? snapContact(moving, delta, candidates, {
+      view: this.stage, settings, axis, normal: motionPlane && planeNormal(motionPlane), held: active.heldContact,
+    }) : undefined
+    active.heldContact = contact?.key
+    let offset = contact?.delta ?? delta
+    if (!contact && !bypass && settings.snap && settings.snapTypes.grid) {
+      const round = (v: number) => roundToGrid(v, settings.grid)
+      offset = motionPlane ? onPlane(motionPlane, toPlane(motionPlane, delta).map(round) as Vec2) : delta.map(round) as Vec3
+    }
+    const position = add(active.object.transform.position, offset)
+    active.contact = contact ? { kind: 'join', target: active.object.id, reference: contact.id, position, face: contact.face } : undefined
     this.patch({
-      mode: 'Moving', preview: { kind: 'move', ids: [...owned], from: active.object.transform, to: { ...active.object.transform, position }, snap: snap?.at, danger },
-      message: danger ? 'Release to request deletion' : snap ? 'Connection snap' :
-        position.map((v, i) => 'XYZ'[i] + ' ' + formatDimension(v, this.units, this.settings.precision)).join(' · '),
+      mode: 'Moving', preview: { kind: 'move', target: active.object.id, ids: [...owned], from: active.object.transform,
+        to: { ...active.object.transform, position }, snap: contact?.snap, danger, fromHand: active.fromHand },
+      message: danger ? 'Release to request deletion' : contact ? snapNames[contact.snap.kind] + ' snap' :
+        position.map((v, i) => 'XYZ'[i] + ' ' + formatDimension(v, this.units, settings.precision)).join(' · '),
     })
   }
   private finishMove(active: Move) {
@@ -360,7 +398,10 @@ export class InteractionController {
     if (preview?.kind !== 'move') { this.patch({ mode: this.baseMode }); return }
     if (preview.danger) { this.delete(active.ids); return }
     if (active.contact) { this.dialog(active.contact, 'Attach or fuse?', true); return }
-    this.transform(active.ids, active.object.id, preview.to, 'Move')
+    const command: Command = { type: 'transform', ids: active.ids, target: active.object.id, value: preview.to, label: 'Move' }
+    void this.commit(command).then(ok => {
+      if (!ok && this.snapshot.preview === preview) this.patch({ preview: undefined })
+    })
   }
 
   private beginCut(object: Entity | undefined, cuttingPlane?: Frame) {
@@ -631,11 +672,12 @@ export class InteractionController {
     const choice = mode === 'center' && !planar && !paired && anchor.faces.length > 0
     const next: Alignment = { kind: 'align', target, reference, mode, position, face: planar, choice }
     const ids = [...descendants(this.entities, [target])]
-    this.patch({ preview: { kind: 'move', ids, from: object.transform, to: { ...object.transform, position }, snap: planar?.at ?? midpoint(...anchor.bounds) } })
+    const snap: Snap = planar ? { kind: 'face', at: planar.at } : { kind: 'center', at: midpoint(...anchor.bounds) }
+    this.patch({ preview: { kind: 'move', target, ids, from: object.transform, to: { ...object.transform, position }, snap } })
     this.dialog(next, choice ? 'Align centers or center on the top face?' : 'Confirm alignment?', true)
   }
 
-  pointerStart(p: ScreenPoint, extrusionHandle = false) {
+  pointerStart(p: ScreenPoint, extrusionHandle = false, bypass = false) {
     if (!this.canEdit || this.active) return false
     const { tool, dialog } = this.snapshot
     if (extrusionHandle || dialog?.kind === 'extrude') {
@@ -649,7 +691,7 @@ export class InteractionController {
       return true
     }
     if (dialog && !['dimension', 'hole'].includes(dialog.kind)) return false
-    if (drawingTools.includes(tool) && tool !== 'polyline' && tool !== 'point') return this.startDraw(tool, p, tool === 'rectangle' ? this.pickLine(p) : undefined)
+    if (drawingTools.includes(tool) && tool !== 'polyline' && tool !== 'point') return this.startDraw(tool, p, tool === 'rectangle' ? this.pickLine(p) : undefined, bypass)
     if (tool === 'move') {
       const hit = this.stage?.pick(p)
       const object = this.entities.find(o => o.id === hit?.id)
@@ -657,12 +699,12 @@ export class InteractionController {
     }
     return false
   }
-  pointerMove(p: ScreenPoint, time = performance.now()) {
+  pointerMove(p: ScreenPoint, time = performance.now(), bypass = false) {
     const active = this.active
     if (!active) { this.hover(p); return }
     switch (active.kind) {
-      case 'draw': this.draw(active, p); break
-      case 'move': this.move(active, p, time); break
+      case 'draw': this.draw(active, p, undefined, bypass); break
+      case 'move': this.move(active, p, time, bypass); break
       case 'extrude': {
         const object = this.entities.find(o => o.id === active.dialog.id)
         if (object?.kind !== 'sketch') return
@@ -684,7 +726,7 @@ export class InteractionController {
     if (active.kind === 'move') this.finishMove(active)
     if (active.kind === 'extrude') this.patch({ message: 'Enter an exact depth or confirm the extrusion.' })
   }
-  click(p: ScreenPoint, multi: boolean) {
+  click(p: ScreenPoint, multi: boolean, bypass = false) {
     if (!this.canEdit) return
     const { tool, dialog } = this.snapshot
     const hit = this.stage?.pick(p)
@@ -713,7 +755,7 @@ export class InteractionController {
     }
     if (dialog && !['dimension'].includes(dialog.kind)) return
     if (tool === 'measure') {
-      const at = hit?.point ?? this.world(p, this.frame)
+      const at = hit?.point ?? this.world(p, this.frame, bypass)?.point
       if (at) {
         this.measured = [...(this.measured.length >= 2 ? [] : this.measured), at]
         this.patch({ preview: { kind: 'measure', points: this.measured }, message: this.measured.length === 2 ? 'Distance measured' : 'Pick the second point.' })
@@ -721,7 +763,7 @@ export class InteractionController {
       return
     }
     if (tool === 'point' || tool === 'polyline') {
-      const point = this.localPoint(p, this.frame)
+      const point = this.localPoint(p, this.frame, undefined, bypass)?.point
       if (!point) return
       if (tool === 'point') { void this.commit({ type: 'sketch', sketch: { frame: this.frame, geometry: { kind: 'point', at: point } } }); return }
       this.sketchPoints = [...this.sketchPoints, point]
@@ -847,6 +889,7 @@ export class InteractionController {
     if (event.type === 'freeze') {
       this.patch({ message: 'Tracking interrupted. Holding preview.', gesture: 'Tracking paused' })
       if (this.active?.kind === 'move') this.active.outside = undefined
+      if (this.active?.kind === 'orbit') this.stage?.stopMotion?.()
       return
     }
     if (event.type === 'cancel') {
@@ -860,6 +903,7 @@ export class InteractionController {
     const labels: Record<GestureMode, string> = { line: 'Two-hand pinch', rectangle: 'Rectangle pull', extrude: 'Extrusion pull', grab: 'Grab', orbit: 'Two-finger orbit', scissors: 'Scissors', select: 'Pinch to select' }
     if (event.type === 'start') {
       if (this.active) return
+      this.stage?.stopMotion?.()
       const object = this.entities.find(o => o.id === event.target)
       this.patch({ gesture: labels[event.mode] })
       switch (event.mode) {
@@ -870,7 +914,7 @@ export class InteractionController {
           if (this.snapshot.dialog?.kind === 'extrude') this.pointerStart(p, true)
           break
         }
-        case 'grab': if (object) this.beginMove(object, p); break
+        case 'grab': if (object) this.beginMove(object, p, true); break
         case 'orbit': this.active = { kind: 'orbit', previous: p }; this.patch({ mode: 'Orbiting', preview: { kind: 'orbit', at: p } }); break
         case 'scissors': {
           const dialog = this.snapshot.dialog?.kind === 'cut' ? this.snapshot.dialog :
@@ -885,6 +929,7 @@ export class InteractionController {
     const active = this.active
     if (!active) return
     if (event.type === 'update') {
+      if (this.snapshot.gesture === 'Tracking paused') this.patch({ gesture: labels[event.mode], message: '' })
       if (event.mode === 'line' && active.kind === 'draw') this.draw(active, q, p)
       else if (active.kind === 'orbit') {
         this.stage?.orbit((p[0] - active.previous[0]) * 6, (p[1] - active.previous[1]) * 4)
@@ -901,6 +946,7 @@ export class InteractionController {
       this.active = undefined
       this.select(active.id)
     } else if (active.kind === 'orbit') {
+      this.stage?.stopMotion?.()
       this.active = undefined
       this.patch({ preview: undefined, mode: this.baseMode })
     } else this.pointerEnd()
@@ -1036,7 +1082,7 @@ export class InteractionController {
           if (intent.value < EPS) throw new Error('Enter a dimension greater than zero.')
           this.active.exact = intent.value
           const preview = this.snapshot.preview
-          this.patch({ preview: { ...preview, sketch: { ...preview.sketch, geometry: preciseSketchDimension(preview.sketch.geometry, intent.value) } } })
+          this.patch({ preview: { ...preview, snap: undefined, sketch: { ...preview.sketch, geometry: preciseSketchDimension(preview.sketch.geometry, intent.value) } }, message: '' })
           return
         }
         if (dialog?.kind === 'extrude') { this.active = undefined; void this.finishExtrude(dialog.id, intent.value); return }

@@ -161,6 +161,7 @@ export function SettingsPanel({ settings, patch, calibrate, resetCalibration }: 
     </section>
     <section><h3><Crosshair size={16} /> Precision</h3>
       {toggle('Enable snapping', 'snapping')}{range('Snap strength', 'snapStrength', .35, 2.4, .05)}
+      <p>Hold Alt or Option while drawing or dragging a body to place freely.</p>
       <div className="modal-fields">
         <NumberField label="Grid increment" value={settings.grid} suffix="mm" digits={3} update={grid => patch({ grid: Math.max(.01, Math.min(1000, grid)) })} />
         <NumberField label="Display decimals" value={settings.precision} digits={0} update={precision => patch({ precision: Math.round(Math.max(0, Math.min(5, precision))) })} />
@@ -202,7 +203,7 @@ export function HelpPanel() {
       <dt>Single pinch</dt><dd>Aim at a part, hold until Pinch to select appears, then release.</dd>
     </dl>
     <h3><Keyboard size={18} /> Mouse and keyboard</h3>
-    <p>Open Tools or Objects from the header. Click to select. Drag empty space to orbit, right-drag to pan, and scroll to zoom.</p>
+    <p>Open Tools or Objects from the header. Click to select. Drag empty space to orbit, right-drag to pan, and scroll to zoom. Hold Alt or Option while drawing or dragging a body to bypass snapping.</p>
     <div className="help-shortcuts">
       {[['Alt+M', 'Mute or unmute'], ['/', 'Command input'], ['V', 'Select'], ['L', 'Line'], ['R', 'Rectangle'], ['E', 'Extrude'], ['G', 'Move'], ['K', 'Split'], ['M', 'Measure'], ['X Y Z', 'Axis constraint'], ['Enter', 'Confirm'], ['Esc', 'Cancel'], ['⌘/Ctrl Z', 'Undo']].map(([key, name]) => <span key={key}><kbd>{key}</kbd>{name}</span>)}
     </div>

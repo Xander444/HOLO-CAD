@@ -29,12 +29,10 @@ export function orientedFrame(origin: Vec3, normal: Vec3, preferredX?: Vec3): Fr
   return { origin, u, v: cross(n, u) }
 }
 
-export function lineGeometry(start: Vec2, end: Vec2, snapAxis = false): Extract<Geometry, { kind: 'line' }> {
+export function lineGeometry(start: Vec2, end: Vec2): Extract<Geometry, { kind: 'line' }> {
   const dx = end[0] - start[0]
   const dy = end[1] - start[1]
-  const angle = Math.atan2(dy, dx) / DEG
-  const nearest = Math.round(angle / 90) * 90
-  return { kind: 'line', at: start, angle: snapAxis && Math.abs(angle - nearest) < 7 ? nearest : angle, length: Math.hypot(dx, dy) }
+  return { kind: 'line', at: start, angle: Math.atan2(dy, dx) / DEG, length: Math.hypot(dx, dy) }
 }
 
 export function extendLine(line: Extract<Geometry, { kind: 'line' }>, point: Vec2): Extract<Geometry, { kind: 'rectangle' }> {

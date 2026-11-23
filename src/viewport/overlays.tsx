@@ -1,6 +1,7 @@
-import { Crosshair, MoveUpRight, Plus } from 'lucide-react'
+import { MoveUpRight, Plus } from 'lucide-react'
 import type { BodyGeometry } from '../cad/kernel'
 import type { Dialog, Preview } from '../interactions/types'
+import { snapNames } from '../interactions/snap'
 import type { Entity, Sketch, Transform, Unit, Vec3 } from '../models/project'
 import { add, formatDimension, midpoint, mul, norm, onPlane, planeNormal, sketchPath, sub } from '../models/math'
 import { matrixOf, transformPoint } from '../models/transforms'
@@ -93,6 +94,7 @@ export function Overlays({ scene, object, mesh, preview, dialog, unit, precision
 }) {
   const [width, height] = scene.dimensions
   const annotations = callouts(object, mesh, preview, dialog)
+  const snap = preview?.kind === 'move' || preview?.kind === 'sketch' ? preview.snap : undefined
   return <div className="scene-overlay" aria-hidden="true">
     <svg className="dimensions" viewBox={'0 0 ' + width + ' ' + height}>
       {annotations.map((a, i) => <DimensionDrawing key={i} item={a} scene={scene} unit={unit} precision={precision} index={i} />)}
@@ -101,7 +103,9 @@ export function Overlays({ scene, object, mesh, preview, dialog, unit, precision
     </svg>
     {preview?.kind === 'orbit' && <div className="orbit-indicator" style={screenAt(preview.at)}><MoveUpRight size={16} /></div>}
     {preview?.kind === 'move' && preview.danger && <div className="deletion-boundary"><span>Deletion area</span></div>}
-    {preview?.kind === 'move' && preview.snap && <div className="snap-marker" style={screenAt(scene.screen(preview.snap))}><Crosshair size={20} /><span>SNAP</span></div>}
+    {snap && <div className="snap-marker" data-snap={snap.kind} style={screenAt(scene.screen(snap.at))}>
+      <i />{snap.kind !== 'grid' && <span>{snapNames[snap.kind]}</span>}
+    </div>}
     {hands.map(hand => <div key={hand.id} className={'hand-point pose-' + hand.pose}
       style={screenAt(hand.cursor.map(v => Math.min(.997, Math.max(.003, v))) as ScreenPoint)}>
       <Plus size={14} />{gesture && <span>{gesture}</span>}

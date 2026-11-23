@@ -114,6 +114,7 @@ Relax the pose before repeating a held sign. After a contact snap, use **Attach*
 ## Mouse and keyboard
 
 - Click or Shift-click to select. Drag to orbit, right-drag to pan, and scroll to zoom. Right-click a solid for object actions.
+- A green diamond marks a snap while you draw or drag a body. Move away to release it. Hold **Alt** or **Option** to bypass snapping for that placement, or adjust **Snap strength** in Settings.
 - **V** Select, **L** Line, **R** Rectangle, **C** Circle, **E** Extrude, **G** Move, **T** Rotate, **S** Scale, **K** Split, **M** Measure.
 - **X**, **Y**, or **Z** toggles an axis constraint. **F** fits the model. **1**, **2**, and **3** switch to Front, Top, and Isometric.
 - **Alt+M** toggles microphone mute. **/** focuses the command box. **Enter** confirms. **Esc** cancels. **Delete** requests deletion.

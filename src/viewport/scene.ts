@@ -49,7 +49,12 @@ const gridFragment = /* glsl */ `
 `
 
 type Part = { entity: Entity; source?: BodyGeometry; group: Group; mesh?: Mesh<BufferGeometry, MeshStandardMaterial>; edges?: LineSegments<BufferGeometry, LineBasicMaterial> }
-type SceneState = { objects: Entity[]; meshes: RenderGeometry; selection: string[]; hover?: string; aimedEdge?: PickedEdge; tool: Tool; plane: PlaneName; axis?: string; grid: boolean; snap?: number; preview?: Preview; busy: boolean; reducedMotion: boolean }
+type SceneState = {
+  objects: Entity[]; meshes: RenderGeometry; selection: string[]; hover?: string; aimedEdge?: PickedEdge; tool: Tool;
+  plane: PlaneName; axis?: string; grid: boolean; snap?: number; preview?: Preview; busy: boolean; gripping: boolean; reducedMotion: boolean;
+}
+type MovePreview = Extract<Preview, { kind: 'move' }>
+type Translation = { preview: MovePreview; ids: Set<string>; shown: Vector3; goal: Vector3 }
 type Hooks = {
   camera: () => void; context: (message?: string) => void; gizmoStart: () => void;
   gizmoEnd: (ids: string[], id: string, transform: Transform, label: string) => void;
@@ -95,6 +100,7 @@ export class CadScene implements StagePort {
   private size = new Vector2(1, 1)
   private observer: ResizeObserver
   private raf = 0
+  private lastFrame = 0
   private state?: SceneState
   private needsRender = true
   private lost = false
@@ -103,6 +109,10 @@ export class CadScene implements StagePort {
   private gizmoObject?: string
   private worldOrigin = new Vector3()
   private orthoHalf = 90
+  private orbitMotion = new Vector2()
+  private pivotMotion = new Vector3()
+  private translation?: Translation
+  private translationMatrix = new Matrix4()
   private repaint = () => { this.needsRender = true; this.hooks.camera() }
 
   constructor(private host: HTMLDivElement, private hooks: Hooks) {
@@ -127,6 +137,7 @@ export class CadScene implements StagePort {
     this.controls.minZoom = .007
     this.controls.maxZoom = 95
     this.controls.addEventListener('change', this.repaint)
+    this.controls.addEventListener('start', this.stopMotion)
     this.transform = new TransformControls(this.camera, this.renderer.domElement)
     this.transform.setSize(.72)
     this.transform.addEventListener('mouseDown', this.onGizmoStart)
@@ -179,9 +190,33 @@ export class CadScene implements StagePort {
     this.orthographic.bottom = -this.orthoHalf
     this.orthographic.updateProjectionMatrix()
   }
-  private animate = () => {
+  private animate = (time = performance.now()) => {
     this.raf = requestAnimationFrame(this.animate)
+    const dt = Math.min(80, Math.max(0, time - this.lastFrame))
+    this.lastFrame = time
+    const immediate = this.state?.reducedMotion
+    const angle = this.orbitMotion
+    if (angle.lengthSq() > 0) {
+      const portion = immediate || angle.lengthSq() < .00000009 ? 1 : 1 - Math.exp(-dt / 28)
+      this.rotateView(angle.x * portion, angle.y * portion)
+      angle.multiplyScalar(1 - portion)
+    }
+    if (this.pivotMotion.lengthSq() > 0) {
+      const limit = this.worldPerPixel() * .25
+      const portion = immediate || this.pivotMotion.lengthSq() <= limit * limit ? 1 : 1 - Math.exp(-dt / 48)
+      this.controls.target.addScaledVector(this.pivotMotion, portion)
+      this.camera.position.addScaledVector(this.pivotMotion, portion)
+      this.pivotMotion.multiplyScalar(1 - portion)
+    }
     this.controls.update()
+    const move = this.translation
+    if (move && !move.shown.equals(move.goal)) {
+      const limit = this.worldPerPixel() * .25
+      if (immediate || move.shown.distanceToSquared(move.goal) <= limit * limit) move.shown.copy(move.goal)
+      else move.shown.lerp(move.goal, 1 - Math.exp(-dt / 20))
+      this.applyTranslation(move)
+      this.needsRender = true
+    }
     if (!this.needsRender || this.lost) return
     this.needsRender = false
     this.renderer.render(this.scene, this.camera)
@@ -210,6 +245,11 @@ export class CadScene implements StagePort {
 
   update(state: SceneState) {
     const prev = this.state
+    const preview = state.preview
+    // Meshes delivered by the kernel already include the committed position.
+    if (preview?.kind === 'move' && !state.objects.some(o => o.id === preview.target && o.transform === preview.from)) {
+      state = { ...state, preview: undefined }
+    }
     this.state = state
     this.controls.enableDamping = !state.reducedMotion
     const remaining = new Set(state.objects.map(o => o.id))
@@ -237,23 +277,26 @@ export class CadScene implements StagePort {
       this.initialFit = true
       this.fit(true)
     }
-    if (state.selection !== prev?.selection && state.selection.length && prev?.selection?.length) {
+    if (state.selection !== prev?.selection && state.selection.length && prev?.selection?.length && !state.gripping && !state.preview) {
       const target = this.pivot(state.selection.at(-1)!)
       if (target && !this.transform.dragging) {
         const shift = target.clone().sub(this.controls.target).multiplyScalar(.6)
-        this.controls.target.add(shift)
-        this.camera.position.add(shift)
-        this.controls.update()
+        if (state.reducedMotion) {
+          this.controls.target.add(shift)
+          this.camera.position.add(shift)
+          this.controls.update()
+        } else this.pivotMotion.copy(shift)
       }
     }
     if (!this.transform.dragging) this.syncGizmo()
-    if (this.preview !== state.preview) this.drawPreview(state.preview)
+    const artwork = state.preview?.kind === 'move' || state.preview?.kind === 'orbit' ? undefined : state.preview
+    if (this.preview !== artwork) this.drawPreview(artwork)
     if (state.aimedEdge !== prev?.aimedEdge || Boolean(state.preview) !== Boolean(prev?.preview)) {
       dispose(this.edgeGuide)
       this.edgeGuide.clear()
       if (!state.preview && state.aimedEdge) this.edgeGuide.add(this.highlightEdge(state.aimedEdge))
     }
-    this.applyPreviewMove(this.transform.dragging ? undefined : state.preview)
+    this.syncTranslation(state)
     this.needsRender = true
   }
 
@@ -319,7 +362,7 @@ export class CadScene implements StagePort {
     if (!id || !state) return
     try { this.hooks.gizmoEnd(state.selection, id, transformOf(this.proxy.matrix), state.tool === 'move' ? 'Move' : state.tool === 'rotate' ? 'Rotate' : 'Scale') }
     catch (error) { this.hooks.context(error instanceof Error ? error.message : 'The transformation is invalid.') }
-    this.applyPreviewMove(undefined)
+    this.applyDelta(new Set(), new Matrix4())
     this.repaint()
   }
   private affected(ids: string[]) {
@@ -340,21 +383,49 @@ export class CadScene implements StagePort {
       group.matrixWorldNeedsUpdate = true
     }
   }
-  private applyPreviewMove(preview?: Preview) {
+  private resetTranslation(id: string) {
+    const part = this.parts.get(id)
+    if (!part) return
+    part.group.matrix.identity()
+    part.group.matrixWorldNeedsUpdate = true
+    if (part.mesh) { part.mesh.material.transparent = false; part.mesh.material.opacity = 1 }
+  }
+
+  private syncTranslation(state: SceneState) {
     if (this.transform.dragging) return
-    if (preview?.kind === 'move') {
-      this.applyDelta(new Set(preview.ids), matrixOf(preview.to).multiply(matrixOf(preview.from).invert()))
-      for (const id of preview.ids) {
-        const part = this.parts.get(id)
-        if (part?.mesh && part.edges) {
-          part.mesh.material.transparent = true
-          part.mesh.material.opacity = preview.danger ? .31 : .62
-          part.edges.material.color.set(preview.danger ? 0xff6a6c : preview.snap ? 0x6df4af : 0x78dcec)
-        }
-      }
-    } else {
-      this.applyDelta(new Set(), new Matrix4())
-      for (const { mesh } of this.parts.values()) if (mesh) { mesh.material.transparent = false; mesh.material.opacity = 1 }
+    const previous = this.translation
+    const preview = state.preview
+    if (preview?.kind !== 'move') {
+      if (previous) for (const id of previous.ids) this.resetTranslation(id)
+      this.translation = undefined
+      return
+    }
+    const ids = previous?.preview === preview ? previous.ids : new Set(preview.ids)
+    if (previous && ids !== previous.ids) for (const id of previous.ids) if (!ids.has(id)) this.resetTranslation(id)
+    const samePart = previous?.preview.target === preview.target && previous.preview.from === preview.from
+    const move = previous?.preview === preview ? previous : {
+      preview, ids, shown: samePart ? previous.shown : new Vector3(), goal: vec(sub(preview.to.position, preview.from.position)),
+    }
+    if (!preview.fromHand || preview.snap || preview.danger || state.busy || state.reducedMotion) move.shown.copy(move.goal)
+    this.translation = move
+    this.applyTranslation(move)
+    for (const id of ids) {
+      const part = this.parts.get(id)
+      if (!part?.mesh || !part.edges) continue
+      part.mesh.material.transparent = true
+      part.mesh.material.opacity = preview.danger ? .31 : .84
+      part.edges.material.color.set(preview.danger ? 0xff6a6c : preview.snap ? 0x6df4af : 0x78dcec)
+    }
+  }
+
+  private applyTranslation(move: Translation) {
+    this.translationMatrix.makeTranslation(move.shown.x, move.shown.y, move.shown.z)
+    for (const id of move.ids) {
+      const group = this.parts.get(id)?.group
+      if (!group) continue
+      group.matrixAutoUpdate = false
+      group.matrix.copy(this.translationMatrix)
+      group.matrixWorldNeedsUpdate = true
     }
   }
 
@@ -426,7 +497,6 @@ export class CadScene implements StagePort {
       }
       case 'measure':
         line(preview.points, 0xf8c47e); preview.points.forEach(p => marker(p, 0xf8c47e)); break
-      case 'move': if (preview.snap) marker(preview.snap, 0x74f3a7); break
       case 'hole': {
         const frame = orientedFrame(add(preview.at, mul(preview.normal, .1)), preview.normal)
         const geometry = preview.rectangular ?
@@ -551,7 +621,7 @@ export class CadScene implements StagePort {
     const dx = (end[0] - start[0]) * this.size.x, dy = (end[1] - start[1]) * this.size.y
     return x * x + y * y > 225 ? (dx * x + dy * y) / (x * x + y * y) * length : -dy * this.worldPerPixel()
   }
-  orbit = (angle: number, polar: number) => {
+  private rotateView(angle: number, polar: number) {
     const current = this.camera.position.clone().sub(this.controls.target)
     const coords = new Spherical().setFromVector3(new Vector3(current.x, current.z, -current.y))
     coords.theta -= angle
@@ -559,7 +629,16 @@ export class CadScene implements StagePort {
     coords.makeSafe()
     const next = new Vector3().setFromSpherical(coords)
     this.camera.position.copy(this.controls.target).add(new Vector3(next.x, -next.z, next.y))
-    this.controls.update()
+  }
+  orbit = (angle: number, polar: number) => {
+    if (this.state?.reducedMotion) {
+      this.rotateView(angle, polar)
+      this.controls.update()
+    } else this.orbitMotion.set(this.orbitMotion.x + angle, this.orbitMotion.y + polar)
+  }
+  stopMotion = () => {
+    this.orbitMotion.set(0, 0)
+    this.pivotMotion.set(0, 0, 0)
   }
   private fit(initial = false) {
     const bounds = new Box3()
@@ -583,6 +662,7 @@ export class CadScene implements StagePort {
     this.repaint()
   }
   view = (name: ViewName) => {
+    this.stopMotion()
     if (name === 'fit') { this.fit(); return }
     const direction = viewDirections[name] ? vec(viewDirections[name]!).normalize() : initialDirection
     if (name === 'reset') { this.camera.position.copy(this.controls.target).add(direction.clone().multiplyScalar(245)); this.fit(true); return }
@@ -592,6 +672,7 @@ export class CadScene implements StagePort {
     this.repaint()
   }
   zoom = (direction: 1 | -1) => {
+    this.stopMotion()
     const factor = direction === 1 ? 1.18 : 1 / 1.18
     if (this.camera instanceof OrthographicCamera) {
       this.camera.zoom = Math.min(95, Math.max(.007, this.camera.zoom * factor))
@@ -606,6 +687,7 @@ export class CadScene implements StagePort {
   projection(ortho: boolean) {
     const next = ortho ? this.orthographic : this.perspective
     if (next === this.camera) return
+    this.stopMotion()
     const pos = this.camera.position.clone()
     if (ortho) {
       this.orthoHalf = pos.distanceTo(this.controls.target) * Math.tan(this.perspective.fov * Math.PI / 360)

@@ -3,6 +3,7 @@ import type { BooleanKind, Axis, Frame, PlaneName, Sketch, Transform, Vec3 } fro
 import type { CornerPattern, EdgeReference, RectangularFace } from '../models/features'
 import type { AlignMode, ViewName } from '../voice/parser'
 import type { ScreenPoint, TrackedHand } from '../vision/tracking'
+import type { Snap } from './snap'
 
 export type Tool = 'select' | 'point' | 'line' | 'rectangle' | 'circle' | 'ellipse' | 'arc' | 'polyline' | 'primitive' |
   'extrude' | 'move' | 'rotate' | 'scale' | 'cut' | 'hole' | 'holePattern' | 'chamfer' | 'union' | 'subtract' | 'intersect' | 'attach' | 'measure'
@@ -11,9 +12,9 @@ export type Mode = 'Idle' | 'Hover' | 'Selection' | 'DrawingLine' | 'DrawingRect
   'AwaitingJoinConfirmation' | 'AwaitingDeleteConfirmation' | 'FeaturePreview' | 'ErrorRecovery'
 export type CutChoice = PlaneName | 'view' | 'custom'
 export type Preview =
-  | { kind: 'sketch'; sketch: Sketch; transform?: Transform; label?: string }
+  | { kind: 'sketch'; sketch: Sketch; transform?: Transform; label?: string; snap?: Snap }
   | { kind: 'extrude'; sketch: Sketch; transform: Transform; depth: number }
-  | { kind: 'move'; ids: string[]; from: Transform; to: Transform; snap?: Vec3; danger?: boolean }
+  | { kind: 'move'; target: string; ids: string[]; from: Transform; to: Transform; snap?: Snap; danger?: boolean; fromHand?: boolean }
   | { kind: 'cut'; frame: Frame; bounds: Bounds; body: string; meshes?: BodyGeometry[]; line?: ScreenPoint[] }
   | { kind: 'measure'; points: Vec3[] }
   | { kind: 'hole'; at: Vec3; normal: Vec3; rectangular: boolean; width: number; height: number }
@@ -37,6 +38,7 @@ export type Dialog = Dimension | Extrusion | Cut | Hole | Alignment | Join | Fea
 export type Pick = { id: string; point: Vec3; normal?: Vec3 }
 export type PickedEdge = { id: string; reference: EdgeReference; segments: Vec3[] }
 export type StagePort = {
+  readonly dimensions: ScreenPoint
   pick(point: ScreenPoint): Pick | undefined
   edgeAt?(point: ScreenPoint): PickedEdge | undefined
   world(point: ScreenPoint, frame: Frame): Vec3 | undefined
@@ -44,6 +46,7 @@ export type StagePort = {
   screen(p: Vec3): ScreenPoint
   direction(): Vec3
   orbit(dx: number, dy: number): void
+  stopMotion?(): void
   view(name: ViewName): void
   zoom(direction: 1 | -1): void
 }

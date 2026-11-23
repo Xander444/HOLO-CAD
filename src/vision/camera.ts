@@ -3,6 +3,8 @@ import type { RawHand } from './tracking'
 type Status = 'off' | 'starting' | 'active'
 type MediaFrame = (hands: RawHand[], time: number, aspect: number) => void
 type Detector = Awaited<ReturnType<typeof import('./detector').createDetector>>
+const frameInterval = 32
+const stallDelay = 240
 
 export class CameraSession {
   private stream?: MediaStream
@@ -12,6 +14,7 @@ export class CameraSession {
   private frameId = 0
   private generation = 0
   private lastResult = 0
+  private lastDelivery = -Infinity
   private lastVideo = -1
   private inFlight = false
 
@@ -29,6 +32,7 @@ export class CameraSession {
       this.stream = stream
       this.video = video
       for (const track of stream.getTracks()) track.onended = () => {
+        if (id !== this.generation) return
         this.stop()
         this.status('off', 'The camera disconnected. Reconnect it and try again.')
       }
@@ -38,7 +42,11 @@ export class CameraSession {
       const model = new URL(import.meta.env.BASE_URL + 'models/hand_landmarker.task', window.location.href).href
       let detectFrame: ((detector: Detector, frame: HTMLVideoElement, time: number) => RawHand[]) | undefined
       if (typeof OffscreenCanvas !== 'undefined' && typeof createImageBitmap !== 'undefined') {
-        try { await this.startWorker(model, id) } catch { this.worker?.terminate(); this.worker = undefined }
+        try { await this.startWorker(model, id) } catch {
+          if (id !== this.generation) return
+          this.worker?.terminate()
+          this.worker = undefined
+        }
       }
       if (id !== this.generation) return
       if (!this.worker) {
@@ -54,16 +62,18 @@ export class CameraSession {
       const loop = (time: number) => {
         if (id !== this.generation) return
         this.frameId = requestAnimationFrame(loop)
-        if (time - this.lastResult > 240) this.frame([], time, this.aspect)
-        if (this.inFlight || time - lastFrame < 34 || video.readyState < 2 || video.currentTime === this.lastVideo) return
+        if (time - this.lastResult > stallDelay && time - this.lastDelivery >= frameInterval) this.deliver([], time)
+        if (this.inFlight || time - lastFrame < frameInterval || video.readyState < 2 || video.currentTime === this.lastVideo) return
         lastFrame = time
         this.lastVideo = video.currentTime
-        if (this.worker) {
+        const worker = this.worker
+        if (worker) {
           this.inFlight = true
           void createImageBitmap(video).then(bitmap => {
-            if (this.worker && this.generation === id) this.worker.postMessage({ bitmap, time }, [bitmap])
-            else bitmap.close()
-          }).catch(() => { this.inFlight = false })
+            if (this.generation !== id) { bitmap.close(); return }
+            try { worker.postMessage({ bitmap, time }, [bitmap]) }
+            catch (error) { bitmap.close(); throw error }
+          }).catch(() => { if (this.generation === id) this.inFlight = false })
         } else if (this.detector && detectFrame) {
           try { this.receive(detectFrame(this.detector, video, time), time) }
           catch { this.stop(); this.status('off', 'Hand tracking stopped. Restart the camera to try again.') }
@@ -85,6 +95,13 @@ export class CameraSession {
   private receive(hands: RawHand[], time: number) {
     this.inFlight = false
     this.lastResult = performance.now()
+    this.deliver(hands, time)
+  }
+
+  private deliver(hands: RawHand[], time: number) {
+    // An inference that outlasted a reported gap must not rewind gestures to an older frame.
+    if (time <= this.lastDelivery) return
+    this.lastDelivery = time
     this.frame(hands, time, this.aspect)
   }
 
@@ -104,7 +121,11 @@ export class CameraSession {
           if (event.data.failed) { this.stop(); this.status('off', 'Hand tracking stopped. Restart the camera to try again.'); return }
           this.receive(event.data.hands, event.data.time)
         }
-        worker.onerror = () => { this.stop(); this.status('off', 'Hand tracking stopped. Restart the camera to try again.') }
+        worker.onerror = () => {
+          if (generation !== this.generation) return
+          this.stop()
+          this.status('off', 'Hand tracking stopped. Restart the camera to try again.')
+        }
         resolve()
       }
       worker.postMessage({ model })
@@ -121,6 +142,7 @@ export class CameraSession {
     this.stream = this.video = this.worker = this.detector = undefined
     this.inFlight = false
     this.lastVideo = -1
+    this.lastDelivery = -Infinity
     this.status('off')
   }
 }

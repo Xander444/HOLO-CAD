@@ -104,7 +104,7 @@ export function Overlays({ scene, object, mesh, preview, dialog, unit, precision
     {preview?.kind === 'move' && preview.snap && <div className="snap-marker" style={screenAt(scene.screen(preview.snap))}><Crosshair size={20} /><span>SNAP</span></div>}
     {hands.map(hand => <div key={hand.id} className={'hand-point pose-' + hand.pose}
       style={screenAt(hand.cursor.map(v => Math.min(.997, Math.max(.003, v))) as ScreenPoint)}>
-      <Plus size={14} /><span>{gesture || hand.pose}</span>
+      <Plus size={14} />{gesture && <span>{gesture}</span>}
     </div>)}
   </div>
 }

@@ -29,7 +29,7 @@ Open [http://127.0.0.1:4173](http://127.0.0.1:4173). Run `npm run build` to rebu
 4. Say **Move it up 5**, **Top view**, or **Split it**. At the split prompt, set the plane and confirm the preview.
 5. Say **Save** for the local library, **Save As** for a portable project, or **Export STEP** for a CAD file.
 
-Voice stays on while the workspace is open unless muted or paused by the browser. The microphone button remembers the mute setting. The dock uses on-device speech when available and lets you opt into browser speech. Enable the camera when you want hand controls. Open **Tools** or **Objects** in the header to use the full mouse and keyboard workspace.
+Voice stays on while the workspace is open unless muted or paused by the browser. The microphone button remembers the mute setting. The dock uses on-device speech when available and lets you opt into browser speech. Turn on **Hands** in the dock for hand controls. Move a hand to aim, hold a pinch over a part in **Select**, then release to select it. Open **Tools** or **Objects** in the header to use the full mouse and keyboard workspace.
 
 - [Build a mounting plate by voice](docs/VOICE_CHECK.md)
 - [Complete voice, hand, and keyboard controls](docs/CONTROLS.md)

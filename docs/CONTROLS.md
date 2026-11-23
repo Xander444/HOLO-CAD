@@ -89,7 +89,7 @@ Browser file and microphone permission dialogs still use your browser’s contro
 
 ## Hand signs and movements
 
-Enable the camera and use **Settings → Start calibration**. Keep your palms well lit and visible. Mouse drags take priority over hand signs. A brief tracking loss freezes a preview. An extended loss cancels it.
+Turn on **Hands** next to Settings and allow camera access. Move a hand to aim the crosshair. In **Select**, hold a pinch over a part until **Pinch to select** appears, then release. Move your whole hand to drag while pinching. Choose **Calibrate** in the camera preview if the workspace is hard to reach. Keep your palms well lit and visible. Mouse drags take priority over hand signs. A brief tracking loss freezes a preview. An extended loss cancels it.
 
 | Sign or movement | What it does |
 | --- | --- |

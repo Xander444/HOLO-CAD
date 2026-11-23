@@ -2,9 +2,9 @@
 
 The [complete controls guide](CONTROLS.md) includes the newer held hand signs for selection, confirmation, cancellation, fit, undo, and redo.
 
-Click the camera button to enable tracking. The preview displays both hands when visible. Hide the preview with its corner button to keep tracking active, or disable the camera to stop the stream.
+Click **Hands** in the dock to enable tracking. Move a hand to aim the crosshair, then pinch to hold that point. Move the whole hand to drag while pinching. Hide the preview with its corner button to keep tracking active. Turn **Hands** off to stop the camera.
 
-Use the calibration button to hold both hands open, pinch both thumb–index pairs, then spread your hands and trace the edges of your comfortable reach. Keep your palms visible against an evenly lit background. Begin on the XY plane in Isometric or Top view. A normal webcam measures image positions. The app projects those positions onto a virtual plane or axis.
+Choose **Calibrate** in the camera preview if you want to adjust the cursor's reach. Hold both hands open, pinch both thumb–index pairs, then spread your hands and trace the edges of your comfortable reach. Choose **Skip** at any point to return to modeling. Keep your palms visible against an evenly lit background. Begin on the XY plane in Isometric or Top view. A normal webcam measures image positions. The app projects those positions onto a virtual plane or axis.
 
 | Gesture | How to use it |
 | --- | --- |

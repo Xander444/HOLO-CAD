@@ -186,6 +186,7 @@ export function HelpPanel() {
       {['Create a red box 50 by 30 by 20', 'Draw a line 100 millimeters', 'Make it taller by five', 'Set that to 40', 'Add four 6 mm holes to the top face, 10 mm in from the corners', 'Make them 8 mm', 'Chamfer this by 2 mm', 'Apply', 'How tall is it?', 'Show tools', 'Undo that', 'Mute microphone'].map(command => <li key={command}><ChevronRight size={12} /><code>{command}</code></li>)}
     </ul>
     <h3><Scan size={18} /> Hand signs</h3>
+    <p>Turn on <strong>Hands</strong> in the dock. Move your hand to aim the crosshair. Choose <strong>Calibrate</strong> in the camera preview if the workspace is hard to reach.</p>
     <dl>
       <dt>Point and hold</dt><dd>Extend only the index finger and hold over a part in Select.</dd>
       <dt>Thumbs up or thumbs down</dt><dd>Hold to apply a dimension, extrusion, or alignment, or to cancel a preview or prompt.</dd>
@@ -198,7 +199,7 @@ export function HelpPanel() {
       <dt>Close two fingers and trace an arc</dt><dd>Extend the index and middle fingers together to orbit with a curved motion.</dd>
       <dt>Open hand, then fist</dt><dd>Hover over a solid, close into a fist, and move. Open to place. Hold a drag beyond the workspace to request deletion.</dd>
       <dt>Open and close scissors</dt><dd>Select a solid, spread the index and middle fingers, trace through it, then close the extended fingers to split.</dd>
-      <dt>Single pinch</dt><dd>Hold over an object and release to select.</dd>
+      <dt>Single pinch</dt><dd>Aim at a part, hold until Pinch to select appears, then release.</dd>
     </dl>
     <h3><Keyboard size={18} /> Mouse and keyboard</h3>
     <p>Open Tools or Objects from the header. Click to select. Drag empty space to orbit, right-drag to pan, and scroll to zoom.</p>

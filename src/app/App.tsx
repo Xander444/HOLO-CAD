@@ -112,6 +112,7 @@ export function App() {
       if (result) {
         calibrator.current = undefined
         setCalibration(undefined)
+        gestures.reset(time)
         updateSettings({ calibration: result })
         workspace.notice('Calibration saved')
       } else setCalibration({ step: session.step, count: session.count })
@@ -229,10 +230,16 @@ export function App() {
   }
   const startCalibration = () => {
     closeModal()
+    gestures.reset(performance.now())
     controller.cancel()
     calibrator.current = new CalibrationSession()
     setCalibration({ step: 0, count: 0 })
     if (cameraStatus === 'off' && video.current) void camera.start(video.current)
+  }
+  const skipCalibration = () => {
+    calibrator.current = undefined
+    setCalibration(undefined)
+    gestures.reset(performance.now())
   }
   const toggleVoice = () => settingsRef.current.voiceMuted ? startVoice() : muteVoice()
   const keyAction = useRef<(e: KeyboardEvent) => void>(() => {})
@@ -241,7 +248,7 @@ export function App() {
     if (e.defaultPrevented) return
     if (key === 'escape') {
       if (modalRef.current) closeModal()
-      else if (calibrator.current) { calibrator.current = undefined; setCalibration(undefined) }
+      else if (calibrator.current) skipCalibration()
       else { controller.cancel(); gestures.reset(performance.now()); workspace.dismissError() }
       return
     }
@@ -288,7 +295,6 @@ export function App() {
   const status = !state.ready ? state.error ? 'Kernel unavailable' : 'Initializing' :
     state.busy ? 'Updating geometry' : modeLabels[interaction.mode]
   const statusText = interaction.message || (state.status === 'Ready' ? '' : state.status)
-  const labelCamera = cameraStatus === 'off' ? 'Enable camera' : 'Disable camera'
 
   return <div className={'app-shell voice-shell ' + (settings.reducedMotion ? 'reduce-motion' : '')}>
     <header className="topbar">
@@ -319,7 +325,8 @@ export function App() {
       <Toolbar tool={interaction.tool} set={t => controller.setTool(t)} create={controller.create} enabled={ready} />
       <Viewport model={state} controller={controller} interaction={interaction} settings={settings} showAdvanced={settings.showTools}>
         <CameraPanel video={video} status={cameraStatus} preview={settings.cameraPreview} mirror={settings.mirror} hands={interaction.hands}
-          gesture={interaction.gesture} calibration={calibration} hide={() => { updateSettings({ cameraPreview: false }); calibrator.current = undefined; setCalibration(undefined) }} />
+          gesture={interaction.gesture} calibration={calibration} calibrate={startCalibration} skipCalibration={skipCalibration}
+          hide={() => updateSettings({ cameraPreview: false })} />
         <WorkspacePrompt controller={controller} state={interaction} unit={state.project.units} precision={settings.precision} busy={state.busy} />
         {state.error && <div role="alert" className="error-toast"><CircleAlert size={18} /><div><strong>{state.ready ? 'Check operation' : 'Startup issue'}</strong><p>{state.error}</p></div>
           <IconButton label="Dismiss message" onClick={workspace.dismissError}><X size={15} /></IconButton>
@@ -334,8 +341,9 @@ export function App() {
         <button type="button" className="undo-button" title="Undo (Ctrl or Command Z)" disabled={!state.undo || !ready} onClick={() => { controller.cancel(); void workspace.step('undo') }}><Hand size={18} strokeWidth={1.7} /><span>Undo</span></button>
         <IconButton label="Redo" disabled={!state.redo || !ready} onClick={() => { controller.cancel(); void workspace.step('redo') }}><Redo2 size={18} /></IconButton>
         <i className="dock-divider" aria-hidden="true" />
-        <IconButton label={labelCamera} aria-pressed={cameraStatus !== 'off'} className={cameraStatus !== 'off' ? 'lit' : ''} onClick={toggleCamera}>
-          {cameraStatus === 'off' ? <VideoOff size={18} /> : <Video size={18} />}</IconButton>
+        <button type="button" className="hands-toggle" aria-pressed={cameraStatus !== 'off'} title={cameraStatus === 'off' ? 'Turn on hand tracking' : 'Turn off hand tracking'} onClick={toggleCamera}>
+          {cameraStatus === 'off' ? <VideoOff size={17} /> : <Video size={17} />}<span>Hands</span>
+        </button>
         {cameraStatus === 'active' && !settings.cameraPreview && <IconButton label="Show camera preview" onClick={() => updateSettings({ cameraPreview: true })}><Video size={17} /></IconButton>}
         <IconButton label="Settings" onClick={() => changeModal('settings')}><Settings2 size={18} /></IconButton>
       </>} />

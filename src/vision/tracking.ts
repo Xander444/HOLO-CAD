@@ -19,6 +19,7 @@ const center = (points: Landmark[]) => {
 const palm = (p: Landmark[]) => center([p[0], p[5], p[9], p[13], p[17]])
 const xy = ({ x, y }: Landmark): ScreenPoint => [x, y]
 const clamp = (n: number, low: number, high: number) => Math.max(low, Math.min(high, n))
+const pinchThreshold = ({ calibration, pinch }: TrackingSettings) => calibration ? clamp((calibration.closedPinch + .16) * pinch / .29, .18, .48) : pinch
 
 class SmoothedCoordinate {
   constructor(private value: number, private raw = value, private velocity = 0) {}
@@ -54,7 +55,7 @@ export function classify(landmarks: Landmark[], aspect: number, settings: Tracki
     d(landmarks[4], landmarks[2], aspect) > .8 * (d(landmarks[2], landmarks[3], aspect) + d(landmarks[3], landmarks[4], aspect))
   const thumbVertical = Math.abs(thumb[1]) > Math.abs(thumb[0]) * 1.2 && Math.abs(thumb[1]) > scale * .36
   const curled = [5, 9, 13, 17].filter(i => d(landmarks[i + 3], centerPalm, aspect) < scale * .95).length
-  const threshold = settings.calibration ? clamp((settings.calibration.closedPinch + .16) * settings.pinch / .29, .18, .48) : settings.pinch
+  const threshold = pinchThreshold(settings)
   let pose: Pose = 'neutral'
   if (count === 0 && curled >= 3 && thumbStraight && thumbVertical && thumbReach > .99) {
     pose = thumb[1] < 0 ? 'thumbs-up' : 'thumbs-down'
@@ -71,9 +72,30 @@ export function classify(landmarks: Landmark[], aspect: number, settings: Tracki
   return { pose, pinchRatio, scale }
 }
 
+type CursorAnchor = 'palm' | 'index' | 'pair' | 'hold'
+type Cursor = { anchor: CursorAnchor; point: ScreenPoint; offset: ScreenPoint; palm: ScreenPoint }
+
+function aim(pose: Pose, landmarks: Landmark[], palm: ScreenPoint, closing: boolean, dt: number, previous?: Cursor): Cursor {
+  const anchor: CursorAnchor = pose === 'pinch' || pose === 'fist' || pose === 'neutral' || closing ? 'hold' :
+    pose === 'point' ? 'index' : pose === 'two' || pose === 'scissors' ? 'pair' : 'palm'
+  const target = anchor === 'index' ? xy(landmarks[8]) : anchor === 'pair' ? xy(center([landmarks[8], landmarks[12]])) : palm
+  let offset: ScreenPoint = [0, 0]
+  if (previous) {
+    if (anchor !== previous.anchor) {
+      // Carry the aim with the palm across pose changes, including the first frame of a pinch.
+      offset = [previous.point[0] + palm[0] - previous.palm[0] - target[0], previous.point[1] + palm[1] - previous.palm[1] - target[1]]
+    } else {
+      // Follow whole-hand motion during a grip. Ease back to the aiming landmark after release.
+      const remaining = anchor === 'hold' ? 1 : Math.exp(-Math.min(dt, .05) / .16)
+      offset = [previous.offset[0] * remaining, previous.offset[1] * remaining]
+    }
+  }
+  return { anchor, offset, palm, point: [target[0] + offset[0], target[1] + offset[1]] }
+}
+
 type Track = {
   id: number; raw: ScreenPoint; velocity: ScreenPoint; time: number; side: string;
-  filters: SmoothedCoordinate[][]; pose: Pose;
+  filters: SmoothedCoordinate[][]; pose: Pose; cursor?: Cursor;
 }
 export function screenPoint(p: ScreenPoint, settings: TrackingSettings): ScreenPoint {
   const { calibration } = settings
@@ -86,12 +108,16 @@ export function screenPoint(p: ScreenPoint, settings: TrackingSettings): ScreenP
 export class HandTracker {
   private next = 0
   private tracks: Track[] = []
+  private lastFrame?: number
 
-  reset() { this.tracks = [] }
+  reset() { this.tracks = []; this.lastFrame = undefined }
 
   update(hands: RawHand[], time: number, aspect: number, settings: TrackingSettings): TrackedHand[] {
+    const lastFrame = this.lastFrame
+    this.lastFrame = time
     this.tracks = this.tracks.filter(track => time - track.time < 480)
-    const raw = hands.filter(h => h.landmarks.length === 21 && h.confidence >= settings.confidence).slice(0, 2)
+    const raw = hands.filter(h => h.landmarks.length === 21 && h.confidence >= settings.confidence &&
+      h.landmarks.every(({ x, y, z }) => Number.isFinite(x) && Number.isFinite(y) && Number.isFinite(z))).slice(0, 2)
     const centers = raw.map(h => xy(palm(h.landmarks)))
     const match = (index: number, track: Track | undefined) => {
       if (!track) return .32
@@ -112,7 +138,7 @@ export class HandTracker {
       const previous = choice[index]
       const current = centers[index]
       const dt = clamp((time - (previous?.time ?? time)) / 1000, .012, .18)
-      const track = previous ?? {
+      const track: Track = previous ?? {
         id: ++this.next, raw: current, velocity: [0, 0], time, side: hand.handedness,
         filters: hand.landmarks.map(l => [l.x, l.y, l.z].map(n => new SmoothedCoordinate(n))), pose: 'neutral',
       }
@@ -121,18 +147,21 @@ export class HandTracker {
         y: track.filters[i][1].update(y, dt, settings.smoothing),
         z: track.filters[i][2].update(z, dt, settings.smoothing),
       }))
-      const measured = classify(filtered, aspect, settings, track.pose)
-      const palmPosition = palm(filtered)
-      const cursor = measured.pose.startsWith('thumbs-') ? filtered[4] : measured.pose === 'fist' || measured.pose === 'open' ? palmPosition :
-        measured.pose === 'pinch' ? center([filtered[4], filtered[8]]) : measured.pose === 'point' ? filtered[8] :
-          center([filtered[8], filtered[12]])
+      // After a gap, the old filtered pose can still look held even if the hand opened out of view.
+      const reacquired = previous && previous.time !== lastFrame
+      const measured = classify(reacquired ? hand.landmarks : filtered, aspect, settings, track.pose)
+      const palmPosition = xy(palm(filtered))
+      // The raw fingertips may already be closing while the smoothed pose still says point.
+      const closing = measured.pose === 'point' && d(hand.landmarks[4], hand.landmarks[8], aspect) < measured.scale * pinchThreshold(settings) * 1.45
+      const cursor = aim(measured.pose, filtered, palmPosition, closing, dt, track.cursor)
       track.velocity = track.velocity.map((v, i) => .64 * v + .36 * (current[i] - track.raw[i]) / (dt * 1000)) as ScreenPoint
       track.raw = current
       track.time = time
       track.pose = measured.pose
       track.side = hand.handedness
+      track.cursor = cursor
       if (!previous) this.tracks.push(track)
-      return { ...measured, id: track.id, cursor: screenPoint(xy(cursor), settings), palm: screenPoint(xy(palmPosition), settings), landmarks: filtered, confidence: hand.confidence, handedness: hand.handedness }
+      return { ...measured, id: track.id, cursor: screenPoint(cursor.point, settings), palm: screenPoint(palmPosition, settings), landmarks: filtered, confidence: hand.confidence, handedness: hand.handedness }
     })
   }
 }

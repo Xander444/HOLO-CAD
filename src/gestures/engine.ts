@@ -129,7 +129,7 @@ export class GestureEngine {
         a.lost = undefined
       }
       if (this.recognizeSign(present, time, options, context)) { a.release = undefined; return }
-      const screen = present.map(h => a.mode === 'grab' ? h.palm : h.cursor)
+      const screen = present.map(h => h.cursor)
       if (held.every(Boolean)) {
         a.release = undefined
         a.partial = undefined
@@ -183,9 +183,9 @@ export class GestureEngine {
         return
       }
       if (!['pinch', 'fist', 'scissors'].includes(pose)) continue
-      const point = pose === 'fist' ? hand.palm : hand.cursor
+      const point = hand.cursor
       const opened = this.open.get(id)
-      if (pose === 'fist' && (!opened || time - opened.time > 800 || distance(opened.palm, point) > .17)) continue
+      if (pose === 'fist' && (!opened || time - opened.time > 800 || distance(opened.palm, hand.palm) > .17)) continue
       const hit = context.hit(point, pose)
       if (!hit) continue
       const delay = pose === 'pinch' ? options.dwell + 135 : options.dwell

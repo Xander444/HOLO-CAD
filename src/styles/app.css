@@ -230,7 +230,7 @@ button.undo-button:not(:disabled):hover { background: #315567 !important; color:
 .status-right > span + span { border-left: 1px solid var(--line); padding-left: 9px; }
 .status-right .status-active { color: var(--green); }
 .status-badge { display: flex; align-items: center; gap: 6px; color: #ade8df; text-transform: uppercase; font-family: var(--mono); font-size: 9px; letter-spacing: .034em; white-space: nowrap }
-.status-badge i, .camera-panel footer i { width: 6px; height: 6px; border-radius: 50%; background: #77dabe; box-shadow: 0 0 7px #77dabe7d; }
+.status-badge i, .camera-panel footer i { width: 6px; height: 6px; border-radius: 50%; background: #77dabe; box-shadow: 0 0 7px #77dabe7d; flex: none; }
 .status-badge.status-error { color: #ffc09c }
 .status-badge.status-error i { background: var(--amber); box-shadow: none; }
 .status-message { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -260,19 +260,20 @@ select { max-width: 145px }
 .camera-panel { position: absolute; right: 13px; top: 61px; z-index: 4; width: min(190px, 45%); border: 1px solid #3a5969; border-radius: 8px; overflow: hidden; background: #13232d; color: #bed8e4; box-shadow: 0 7px 23px #0007 }
 .camera-panel.camera-inactive { clip-path: inset(100%); width: 1px; height: 1px; pointer-events: none }
 .camera-panel header, .camera-panel footer { display: flex; justify-content: space-between; align-items: center; gap: 4px; min-height: 26px; padding: 3px 6px; font-size: 10px; }
-.camera-panel header span { display: flex; gap: 4px; align-items: center; }
+.camera-panel header span, .camera-panel footer span { display: flex; gap: 5px; align-items: center; }
 .camera-panel header .icon-button { width: 22px; height: 21px; }
-.camera-panel footer { justify-content: start }
-.camera-stream { position: relative; min-height: 70px; background: #0f1a23 }
-.camera-stream video { display: block; width: 100%; max-height: 150px }
-.camera-stream svg { position: absolute; inset: 0; width: 100%; height: 100% }
+.camera-panel footer i:not(.live) { background: #95a5b4; box-shadow: none; }
+.camera-panel button.camera-action { color: #a9e9f3; border-color: #39586a; border-radius: 4px; min-height: 25px; padding: 2px 5px; font-size: 10px; }
+.camera-panel button.camera-action:hover { background: #294756; }
+.camera-stream { position: relative; width: 100%; margin-inline: auto; background: #0f1a23 }
+.camera-stream video, .camera-stream svg { position: absolute; inset: 0; width: 100%; height: 100% }
 .camera-stream line { stroke: #80fce5; stroke-width: 1; }
 .camera-stream circle { fill: #80fce5 }
 .camera-stream .hand-secondary line { stroke: #deb6ff }
 .camera-stream .hand-secondary circle { fill: #deb6ff }
-.camera-stream p { position: absolute; bottom: 5px; left: 6px; font-size: 10px; background: #0d1d27e0; padding: 3px 4px; margin: 0 }
 .calibration-note { padding: 8px; display: flex; align-items: start; gap: 6px; font-size: 11px; border-top: 1px solid #3a5969; }
 .calibration-note svg { flex: none; color: var(--accent) }
+.calibration-note > div { flex: 1; }
 .calibration-note p { margin: 3px 0 }
 .calibration-note progress { width: 100%; height: 6px }
 .modal-backdrop { position: fixed; inset: 0; z-index: 40; background: #07101bb5; backdrop-filter: blur(3px); display: grid; place-items: center; padding: 15px }
@@ -428,6 +429,8 @@ button.export-options, .export-options button { display: flex; align-items: cent
 .voice-enable { grid-column: 3; padding: 7px 9px; min-height: 34px; white-space: nowrap; }
 .voice-actions { grid-column: 5; display: flex; justify-content: flex-end; align-items: center; gap: 3px; }
 .voice-actions .icon-button { height: 32px; width: 32px; }
+.voice-actions button.hands-toggle { min-height: 32px; display: flex; align-items: center; gap: 5px; padding: 3px 6px; border: 1px solid #344c5d; border-radius: 6px; color: #b8d4de; font-size: 11px; }
+.voice-actions button.hands-toggle:hover, .voice-actions button.hands-toggle[aria-pressed="true"] { color: var(--accent); background: #203441; border-color: #446674; }
 .voice-suggestions { min-height: 25px; display: flex; align-items: center; gap: 6px; margin: 7px 0 0 53px; color: #aabccc; font-size: 11px; white-space: nowrap; overflow: auto; padding: 1px 1px 2px; scrollbar-width: thin; }
 .voice-suggestions > span { padding-right: 3px; flex: none; }
 .voice-suggestions .last-command { overflow: hidden; text-overflow: ellipsis; color: #aee7ed; flex: 0 1 auto; max-width: 34%; padding-right: 10px; margin-right: 3px; border-right: 1px solid #3c525d; }
@@ -479,6 +482,7 @@ button.export-options, .export-options button { display: flex; align-items: cent
 @media (max-width: 400px) {
   button.panel-toggle span { display: none; }
   .voice-actions .icon-button { width: 26px; height: 30px; }
+  .voice-actions button.hands-toggle { gap: 3px; padding-inline: 4px; }
   .voice-actions .dock-divider { margin: 0 1px; }
   .voice-dock .voice-suggestions button { font-size: 10px; }
   .voice-suggestions > span { font-size: 10px; }

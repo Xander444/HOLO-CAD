@@ -5,10 +5,12 @@ import { IconButton, NumberField } from './ui'
 import type { InteractionController } from '../interactions/controller'
 import type { CutChoice, Dialog, InteractionState } from '../interactions/types'
 import type { Settings, SnapKind } from '../interactions/settings'
+import { shapeOf, sizeFields } from '../interactions/sizing'
 import type { Unit, Vec3 } from '../models/project'
-import { displayValue, formatDimension, planeNormal, UNIT_FACTORS } from '../models/math'
+import { displayValue, planeNormal, UNIT_FACTORS } from '../models/math'
 import { faceDirections } from '../models/features'
 import type { FeatureFace } from '../voice/parser'
+import { quantity } from '../voice/parser'
 import guideUrl from '../../docs/CONTROLS.md?url'
 
 export function Modal({ title, close, children }: PropsWithChildren<{ title: string; close: () => void }>) {
@@ -37,8 +39,10 @@ export function WorkspacePrompt({ controller, state, unit, precision, busy }: {
 }) {
   const dialog = state.dialog
   const [dimension, setDimension] = useState('')
-  const dimensionId = dialog?.kind === 'dimension' ? dialog.id : undefined
-  useEffect(() => setDimension(''), [dimensionId])
+  const creationSizes = dialog?.kind === 'creation' ? sizeFields(shapeOf(dialog.command)) : []
+  const question = dialog?.kind === 'dimension' ? dialog : dialog?.kind === 'creation' ? creationSizes.find(size => size.key === dialog.missing[0]) : undefined
+  const draft = dialog?.kind === 'creation' ? dialog.command : dialog?.kind === 'dimension' ? dialog.id : undefined
+  useEffect(() => setDimension(''), [draft, question?.key])
   if (!dialog) {
     if (!state.polylineCount) return null
     return <div className="workspace-prompt"><div><strong>{state.polylineCount} points</strong><p>Finish drawing the polyline.</p></div>
@@ -54,15 +58,32 @@ export function WorkspacePrompt({ controller, state, unit, precision, busy }: {
   const action = (label: string, cb = controller.confirm) => <button type="button" className={dialog.kind === 'delete' ? 'danger-button' : 'primary'} disabled={busy || featurePending} onClick={cb}>{label}</button>
   let form
   let buttons = <>{action(primaryLabel(dialog))}</>
-  if (dialog.kind === 'dimension') {
-    const apply = () => { if (dimension.trim()) controller.command(dimension); else controller.confirm() }
-    form = <form className="dimension-entry" onSubmit={e => { e.preventDefault(); apply() }}>
-      <input aria-label={'Exact ' + dialog.label.toLowerCase()} type="text" inputMode="decimal" value={dimension} onChange={e => setDimension(e.currentTarget.value)}
-        placeholder={formatDimension(dialog.value, unit, precision)} />
-    </form>
-    buttons = <>{action(dimension.trim() ? 'Apply' : 'Keep value', apply)}</>
+  if (dialog.kind === 'dimension' || dialog.kind === 'creation') {
+    const format = (value: number) => Number(size(value).toFixed(digits)) + ' ' + unit
+    const answer = dimension.trim()
+    const apply = () => {
+      if (busy || !question) return
+      if (!answer) controller.confirm()
+      else controller.command(quantity(answer, 'scalar') === undefined ? answer : answer + ' ' + unit)
+    }
+    form = question && <div className="size-fields">
+      {creationSizes.length > 1 && <div className="size-values" aria-label="Current sizes">
+        {creationSizes.map(value => <div key={value.key} className={value.key === question.key ? 'current' : undefined}>
+          <span>{value.label}</span><strong>{format(value.value)}</strong>
+        </div>)}
+      </div>}
+      <form className="dimension-entry" onSubmit={e => { e.preventDefault(); apply() }}>
+        <input aria-label={'Exact ' + question.label.toLowerCase() + ' in ' + unit} type="text" inputMode="decimal" value={dimension}
+          onChange={e => setDimension(e.currentTarget.value)} placeholder={format(question.value)} disabled={busy} />
+      </form>
+      {dialog.error && <p className="error-inline" role="alert">{dialog.error}</p>}
+    </div>
+    buttons = question ? <>{action(answer ? dialog.kind === 'creation' && dialog.missing.length > 1 ? 'Next' : 'Apply size' :
+      dialog.kind === 'creation' ? 'Use current sizes' : 'Keep drawn size', apply)}</> : <></>
   } else if (dialog.kind === 'extrude') {
-    form = <div className="prompt-fields">{field('Depth', dialog.depth, depth => controller.previewExtrude({ ...dialog, depth }))}</div>
+    form = <div className="feature-fields"><div className="prompt-fields">{field('Depth', dialog.depth, depth => controller.previewExtrude({ ...dialog, depth }))}</div>
+      {dialog.error && <p className="error-inline" role="alert">{dialog.error}</p>}
+    </div>
   } else if (dialog.kind === 'cut') {
     const n = planeNormal(dialog.plane)
     form = <div className="cut-fields">
@@ -118,7 +139,7 @@ export function WorkspacePrompt({ controller, state, unit, precision, busy }: {
     <div className="prompt-heading">
       {dialog.kind === 'delete' ? <TriangleAlert size={19} /> : dialog.kind === 'cut' ? <Scan size={18} /> : <Crosshair size={18} />}
       <strong>{state.message || primaryLabel(dialog)}</strong>
-      <IconButton label="Cancel operation" onClick={controller.cancel}><X size={16} /></IconButton>
+      <IconButton label={dialog.kind === 'dimension' ? 'Dismiss size question' : 'Cancel operation'} onClick={controller.cancel}><X size={16} /></IconButton>
     </div>
     {form}
     <div className="prompt-buttons">{buttons}</div>
@@ -182,7 +203,7 @@ export function HelpPanel() {
   return <div className="modal-scroll help-body">
     <a className="guide-download" href={guideUrl} download="HOLO-CAD-controls.md"><ArrowDownToLine size={17} /> Download all voice and hand controls</a>
     <h3><CircleHelp size={18} /> Start with voice</h3>
-    <p>Say one command at a time. Say “select the bearing collar” or “list objects” to start with an existing part. After selecting a part, “it” refers to that part.</p>
+    <p>Say “create a cylinder” to answer one size question at a time, or include all the sizes in one command. After selecting a part, “it” refers to that part.</p>
     <ul className="help-commands">
       {['Create a red box 50 by 30 by 20', 'Draw a line 100 millimeters', 'Make it taller by five', 'Set that to 40', 'Add four 6 mm holes to the top face, 10 mm in from the corners', 'Make them 8 mm', 'Chamfer this by 2 mm', 'Apply', 'How tall is it?', 'Show tools', 'Undo that', 'Mute microphone'].map(command => <li key={command}><ChevronRight size={12} /><code>{command}</code></li>)}
     </ul>

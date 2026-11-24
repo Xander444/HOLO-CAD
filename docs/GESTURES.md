@@ -9,9 +9,9 @@ Choose **Calibrate** in the camera preview if you want to adjust the cursor's re
 | Gesture | How to use it |
 | --- | --- |
 | Select | Hold a single pinch over an object, then release. |
-| Draw a line | With **Select** or **Line** active, pinch with both hands. Spread them, then release both pinches close together. The amber prompt accepts an exact length. |
-| Extend to a rectangle | With a line selected, hold a pinch near it and pull perpendicular to the line on its sketch plane. Release, then enter an exact height. |
-| Extrude | Select a closed sketch. Pinch its extrusion handle and pull in the screen direction of the sketch normal. Release and confirm the depth. Enter a signed number to set the final depth. |
+| Draw a line | With **Select** or **Line** active, pinch with both hands. Spread them, then release both pinches close together. When asked for the length, say a number or choose **Keep drawn size**. |
+| Extend to a rectangle | With a line selected, hold a pinch near it and pull perpendicular to the line on its sketch plane. Release to hear the height question. |
+| Extrude | Select a closed sketch. Pinch its extrusion handle and pull in the screen direction of the sketch normal. Release to hear the depth question. Say a signed number or confirm the depth shown. |
 | Orbit | In **Select**, **Move**, **Rotate**, or **Scale**, extend index and middle fingers close together and trace a small arc. Continue moving the pose to orbit. Release to stop. |
 | Grab and move | Hold an open hand over a solid, close into a fist, and move. Open the hand to place the solid. Choose an axis in the viewport or with X, Y, or Z for constrained movement. |
 | Attach or fuse | When a move finds a connection, the app previews the position and offers **Attach**, **Fuse**, and **Place only**. Attach creates a parent-child relationship. Fuse requires a single valid result. |

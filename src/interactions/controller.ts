@@ -7,7 +7,7 @@ import {
   AXES, DEG, EPS, add, axisIndex, closedSketch, cross, dot, extendLine, formatDimension, lineGeometry,
   midpoint, mul, norm, onPlane, orientedFrame, planeFrame, planeNormal, sketchPath, sub, toPlane, UNIT_FACTORS,
 } from '../models/math'
-import { defaultPrimitive, entityType } from '../models/project'
+import { defaultPrimitive, entityType, identity, makeBody, uid } from '../models/project'
 import { parameters } from '../models/parameters'
 import { cornerHoleCenters, faceDirections } from '../models/features'
 import type { CornerPattern } from '../models/features'
@@ -15,12 +15,14 @@ import type { Axis, Body, BooleanKind, Entity, Frame, Geometry, PlaneName, Sketc
 import { matrixOf, transformFrame, transformPoint, transformedNormal } from '../models/transforms'
 import type { Pose, ScreenPoint, TrackedHand } from '../vision/tracking'
 import type { Event, Context, GestureMode } from '../gestures/engine'
-import { objectNameKey, parseIntent, primitiveFromIntent, quantity } from '../voice/parser'
+import { dimensionList, objectNameKey, parseIntent, primitiveFromIntent, quantity } from '../voice/parser'
 import type { AlignMode, FeatureFace, Intent, WorkspacePanel } from '../voice/parser'
 import { alignBounds, collectSnapTargets, faceAt, roundToGrid, snapContact, snapLineAxis, snapNames, snapPoint } from './snap'
 import type { Snap, SnapTargets } from './snap'
 import type { Settings } from './settings'
-import type { Alignment, Chamfer, Cut, CutChoice, Dialog, Extrusion, FeatureDraft, Hole, HolePattern, InteractionState, Join, Mode, Pick as StagePick, PickedEdge, Preview, StagePort, Tool } from './types'
+import { checkSize, shapeOf, sizeFields, sizeQuestion, sizeTarget, suggestedSizes, validateSizes, withSize } from './sizing'
+import type { NewShape } from './sizing'
+import type { Alignment, Chamfer, Creation, Cut, CutChoice, Dialog, Dimension, Extrusion, FeatureDraft, Hole, HolePattern, InteractionState, Join, Mode, Pick as StagePick, PickedEdge, Preview, StagePort, Tool } from './types'
 
 type Drawing = {
   kind: 'draw'; tool: Tool; frame: Frame; start: Vec2; source?: SketchObject; exact?: number;
@@ -37,7 +39,7 @@ type Active = Drawing | Move |
 type Actions = {
   saveAs(): void; open(): void; fresh(): void; export(format: 'stl' | 'step'): void;
   speak(message: string): void; settings(): Settings; snap(): void; commandFocus(): void;
-  help?(): void; mute?(): void; panel?(panel: WorkspacePanel, show: boolean): void;
+  stopPrompt?(): void; help?(): void; mute?(): void; panel?(panel: WorkspacePanel, show: boolean): void;
 }
 const drawingTools: Tool[] = ['point', 'line', 'rectangle', 'circle', 'ellipse', 'arc', 'polyline']
 const modeTool: Partial<Record<Tool, Mode>> = {
@@ -54,6 +56,7 @@ const toolMessage: Partial<Record<Tool, string>> = {
   select: 'Click to select. Shift-click to select multiple objects.',
 }
 const operationName: Record<BooleanKind, string> = { union: 'Fuse', subtract: 'Subtract', intersect: 'Intersect' }
+const depthQuestion = 'How deep should the extrusion be?'
 const initial: InteractionState = { tool: 'select', plane: 'XY', mode: 'Idle', hands: [], message: '', polylineCount: 0 }
 const before = (p: ScreenPoint, q: ScreenPoint) => Math.hypot(p[0] - q[0], p[1] - q[1])
 type Model = Pick<WorkspaceModel, 'get' | 'select' | 'commit' | 'fail' | 'notice' | 'step' | 'save'> &
@@ -109,7 +112,7 @@ export class InteractionController {
     this.patch({ mode: 'ErrorRecovery' })
   }
   private dialog(dialog: Dialog, message: string, speak = false) {
-    const mode: Mode = dialog.kind === 'dimension' ? 'AwaitingDimension' : dialog.kind === 'extrude' ? 'Extruding' :
+    const mode: Mode = dialog.kind === 'dimension' || dialog.kind === 'creation' ? 'AwaitingDimension' : dialog.kind === 'extrude' ? 'Extruding' :
       dialog.kind === 'cut' ? 'CuttingPreview' : dialog.kind === 'delete' ? 'AwaitingDeleteConfirmation' :
       dialog.kind === 'holePattern' || dialog.kind === 'chamfer' ? 'FeaturePreview' :
       dialog.kind === 'align' ? 'AwaitingAlignment' : ['join', 'boolean', 'confirm', 'voice'].includes(dialog.kind) ? 'AwaitingJoinConfirmation' : 'SketchEditing'
@@ -132,6 +135,7 @@ export class InteractionController {
   }
 
   cancel = () => {
+    if (this.snapshot.dialog) this.actions.stopPrompt?.()
     if (this.active?.kind === 'orbit') this.stage?.stopMotion?.()
     this.active = undefined
     this.sketchPoints = []
@@ -174,10 +178,10 @@ export class InteractionController {
     const ids = this.selectedIds
     const current = multi ? ids.includes(id) ? ids.filter(v => v !== id) : [...ids, id] : [id]
     if (this.snapshot.dialog && this.snapshot.dialog.kind !== 'dimension') this.cancel()
-    else if (this.snapshot.dialog?.kind === 'dimension' && this.snapshot.dialog.id !== id) this.cancel()
+    else if (this.snapshot.dialog?.kind === 'dimension' && (this.snapshot.dialog.id !== id || multi)) this.cancel()
     if (this.picked?.id !== id) this.picked = undefined
     this.model.select(current)
-    this.patch({ mode: this.baseMode, message: '' })
+    if (!this.snapshot.dialog) this.patch({ mode: this.baseMode, message: '' })
   }
   hover(p: ScreenPoint | undefined) {
     if (this.active || this.snapshot.dialog) return
@@ -190,9 +194,79 @@ export class InteractionController {
   }
 
   create = (shape: Parameters<typeof defaultPrimitive>[0]) => {
+    this.beginCreation({ type: 'create', primitive: defaultPrimitive(shape), at: this.creationPoint() })
+  }
+
+  private beginCreation(command: NewShape, supplied: string[] = []) {
+    if (!this.canEdit) return
+    const missing = sizeFields(shapeOf(command)).map(field => field.key).filter(key => !supplied.includes(key))
+    const draft = suggestedSizes(command, missing)
+    validateSizes(draft)
     this.cancel()
     this.patch({ tool: 'select' })
-    void this.commit({ type: 'create', primitive: defaultPrimitive(shape), at: this.creationPoint() })
+    if (missing.length) this.showCreation({ kind: 'creation', command: draft, missing }, true)
+    else void this.commit(draft)
+  }
+
+  private showCreation(draft: Creation, speak: boolean) {
+    const { command, missing } = draft
+    const shape = shapeOf(command)
+    const field = sizeFields(shape).find(size => size.key === missing[0])!
+    const source = command.type === 'sketch' ? this.entities.find(object => object.id === command.source) : undefined
+    this.patch({ preview: command.type === 'sketch' ? { kind: 'sketch', sketch: command.sketch, transform: source?.transform } : undefined })
+    this.dialog(draft, sizeQuestion(shape.kind, field), speak)
+    if (command.type === 'create') {
+      const id = uid()
+      const body = makeBody(id, 'Preview', { kind: 'primitive', primitive: command.primitive }, { ...identity(), position: command.at ?? [0, 0, 0] }, command.color)
+      void this.model.kernel.request({ op: 'render', bodies: [body] }).then(({ results }) => {
+        const current = this.snapshot.dialog
+        if (current?.kind === 'creation' && current.command === command && !this.working && results[id]) {
+          this.patch({ preview: { kind: 'primitive', mesh: results[id], color: command.color } })
+        }
+      }).catch(() => {
+        // A missing preview leaves the size fields available for correction or confirmation.
+      })
+    }
+  }
+
+  private creationAnswer(dialog: Creation, answers: { key: string; value: number; adjustment?: 'set' | 'add' | 'multiply' }[]) {
+    let { command, missing } = dialog
+    let lastKey: string | undefined
+    try {
+      for (const answer of answers) {
+        const target = sizeTarget(shapeOf(command), answer.key)
+        if (!target) throw new Error('That dimension is unavailable on this shape.')
+        const { field, factor } = target
+        const value = answer.adjustment === 'add' ? field.value + answer.value * factor :
+          answer.adjustment === 'multiply' ? field.value * answer.value : answer.value * factor
+        checkSize(value)
+        command = withSize(command, field.key, value)
+        missing = missing.filter(key => key !== field.key)
+        lastKey = field.key
+      }
+      command = suggestedSizes(command, missing)
+      validateSizes(command)
+    } catch (error) {
+      this.patch({ dialog: { ...dialog, error: (error as Error).message } })
+      return
+    }
+    const next = { ...dialog, command, missing, error: undefined }
+    if (missing.length) this.showCreation(next, missing[0] !== dialog.missing[0])
+    else {
+      this.patch({ dialog: next, message: 'Creating ' + shapeOf(command).kind + '…' })
+      void this.finishCreation(next, lastKey)
+    }
+  }
+
+  private async finishCreation(draft: Creation, lastKey?: string) {
+    if (!this.canEdit || this.snapshot.dialog !== draft) return
+    this.actions.stopPrompt?.()
+    if (await this.commit(draft.command)) {
+      if (lastKey && this.object) this.lastDimension = { id: this.object.id, key: lastKey, time: performance.now() }
+    } else if (this.snapshot.dialog === draft) {
+      const missing = draft.missing.length ? draft.missing : sizeFields(shapeOf(draft.command)).map(field => field.key)
+      this.showCreation({ ...draft, missing }, false)
+    }
   }
   private creationPoint(): Vec3 {
     const { project } = this.model.get()
@@ -302,12 +376,44 @@ export class InteractionController {
     const geometry = preview.sketch.geometry
     const done = await this.commit({ type: 'sketch', sketch: preview.sketch, source: active.source?.id })
     if (!done) { this.patch({ preview: undefined }); return }
-    const id = this.object?.id
-    if (!id) return
-    const dimension = geometry.kind === 'line' ? { key: 'length', label: 'Length', value: geometry.length } :
-      geometry.kind === 'rectangle' ? { key: 'height', label: 'Height', value: Math.abs(geometry.height) } :
-      geometry.kind === 'circle' || geometry.kind === 'arc' ? { key: 'radius', label: 'Radius', value: geometry.radius } : undefined
-    if (dimension && active.exact === undefined) this.dialog({ kind: 'dimension', id, ...dimension }, 'What ' + dimension.label.toLowerCase() + '?', true)
+    const object = this.object
+    if (object?.kind !== 'sketch') return
+    const fields = sizeFields(geometry).map(field => field.key)
+    const first = geometry.kind === 'rectangle' ? 'height' : fields[0]
+    const remaining = fields.filter(key => !(active.source && key === 'width') && !(active.exact !== undefined && key === first))
+    if (remaining.length) this.askDrawnSize(object, remaining, true)
+  }
+
+  private askDrawnSize(object: SketchObject, remaining: string[], speak: boolean) {
+    const shape = object.sketch.geometry
+    const field = sizeFields(shape).find(value => value.key === remaining[0])!
+    this.dialog({ kind: 'dimension', id: object.id, remaining, ...field }, sizeQuestion(shape.kind, field), speak)
+  }
+
+  private async drawnAnswer(dialog: Dimension, key: string, amount: number, adjustment?: 'set' | 'add' | 'multiply') {
+    const object = this.entities.find(candidate => candidate.id === dialog.id)
+    if (object?.kind !== 'sketch') return
+    const target = sizeTarget(object.sketch.geometry, key)
+    if (!target) {
+      if (this.parameter(object, key)) await this.setDimension(object, key, amount, adjustment)
+      else this.patch({ dialog: { ...dialog, error: 'That dimension is unavailable on this sketch.' } })
+      return
+    }
+    const { field, factor } = target
+    const value = adjustment === 'add' ? field.value + amount * factor : adjustment === 'multiply' ? field.value * amount : amount * factor
+    try { checkSize(value) } catch (error) {
+      this.patch({ dialog: { ...dialog, error: (error as Error).message } })
+      return
+    }
+    if (!await this.commit({ type: 'parameter', id: object.id, key: field.key, value }, false) || this.snapshot.dialog !== dialog) return
+    this.lastDimension = { id: object.id, key: field.key, time: performance.now() }
+    const remaining = dialog.remaining.filter(key => key !== field.key)
+    const updated = this.object
+    if (remaining.length && updated?.kind === 'sketch') this.askDrawnSize(updated, remaining, remaining[0] !== dialog.key)
+    else {
+      this.actions.stopPrompt?.()
+      this.patch({ dialog: undefined, mode: this.baseMode, message: '' })
+    }
   }
 
   private pickLine(p: ScreenPoint) {
@@ -328,15 +434,24 @@ export class InteractionController {
       return
     }
     const dialog: Extrusion = { kind: 'extrude', id: object.id, depth: 20 }
-    this.dialog(dialog, 'Extrude sketch', speak)
+    this.dialog(dialog, speak ? depthQuestion : 'Pull to set the depth.', speak)
     this.previewExtrude(dialog)
   }
   previewExtrude(dialog: Extrusion) {
     const object = this.entities.find(o => o.id === dialog.id)
     if (object?.kind !== 'sketch') return
-    this.patch({ dialog, preview: { kind: 'extrude', sketch: object.sketch, transform: object.transform, depth: dialog.depth } })
+    this.patch({ dialog: { ...dialog, error: undefined }, preview: { kind: 'extrude', sketch: object.sketch, transform: object.transform, depth: dialog.depth } })
   }
   private async finishExtrude(id: string, depth: number) {
+    const dialog = this.snapshot.dialog
+    if (!Number.isFinite(depth) || Math.abs(depth) < EPS || Math.abs(depth) > 1e7) {
+      const error = 'Enter a nonzero depth within the modeling range.'
+      if (dialog?.kind === 'extrude') this.patch({ dialog: { ...dialog, error }, message: depthQuestion })
+      else this.error(new Error(error))
+      return
+    }
+    this.active = undefined
+    if (dialog?.kind === 'extrude') this.actions.stopPrompt?.()
     if (await this.commit({ type: 'extrude', id, depth })) this.patch({ tool: 'select' })
   }
 
@@ -496,7 +611,7 @@ export class InteractionController {
     if (!face) { this.error(new Error('Choose a planar face for this operation.')); return }
     const at = pick?.id === object.id ? pick.point : face.at
     const hole: Hole = { kind: 'hole', id: object.id, at, face, mode: 'through', width: 10, height: 10, depth: 6 }
-    this.dialog(hole, 'Set the hole diameter or confirm the preview.', true)
+    this.dialog(hole, 'What diameter should the hole have?', true)
     this.previewHole(hole)
   }
   previewHole(dialog: Hole) {
@@ -684,6 +799,8 @@ export class InteractionController {
       const draft = dialog?.kind === 'extrude' ? dialog : undefined
       if (!draft) return false
       this.active = { kind: 'extrude', dialog: draft, start: p, depth: draft.depth }
+      this.actions.stopPrompt?.()
+      this.patch({ message: 'Pull to set the depth.' })
       return true
     }
     if (dialog?.kind === 'cut') {
@@ -724,7 +841,7 @@ export class InteractionController {
     if (!active) return
     if (active.kind === 'draw') void this.finishDraw(active)
     if (active.kind === 'move') this.finishMove(active)
-    if (active.kind === 'extrude') this.patch({ message: 'Enter an exact depth or confirm the extrusion.' })
+    if (active.kind === 'extrude' && this.snapshot.dialog?.kind === 'extrude') this.dialog(this.snapshot.dialog, depthQuestion, true)
   }
   click(p: ScreenPoint, multi: boolean, bypass = false) {
     if (!this.canEdit) return
@@ -766,6 +883,11 @@ export class InteractionController {
       const point = this.localPoint(p, this.frame, undefined, bypass)?.point
       if (!point) return
       if (tool === 'point') { void this.commit({ type: 'sketch', sketch: { frame: this.frame, geometry: { kind: 'point', at: point } } }); return }
+      const [first] = this.sketchPoints
+      const last = this.sketchPoints.at(-1)
+      const near = ([x, y]: Vec2) => Math.hypot(x - point[0], y - point[1]) < EPS
+      if (last && near(last)) return
+      if (first && this.sketchPoints.length >= 3 && near(first)) { this.polyline(true); return }
       this.sketchPoints = [...this.sketchPoints, point]
       this.patch({ mode: 'SketchEditing', polylineCount: this.sketchPoints.length, preview: {
         kind: 'sketch', sketch: { frame: this.frame, geometry: { kind: 'polyline', points: this.sketchPoints, closed: false } },
@@ -798,6 +920,7 @@ export class InteractionController {
       return
     }
     switch (d.kind) {
+      case 'creation': void this.finishCreation(d); break
       case 'dimension': this.cancel(); break
       case 'extrude': void this.finishExtrude(d.id, d.depth); break
       case 'delete': void this.commit({ type: 'delete', ids: d.ids }); break
@@ -834,7 +957,7 @@ export class InteractionController {
       sign: (p, pose) => {
         if (!this.canEdit) return
         if (pose === 'thumbs-down' && (dialog || this.active || this.snapshot.preview)) return { sign: 'cancel' }
-        if (pose === 'thumbs-up' && !this.active && dialog && ['dimension', 'extrude', 'align'].includes(dialog.kind)) return { sign: 'confirm' }
+        if (pose === 'thumbs-up' && !this.active && dialog && ['creation', 'dimension', 'extrude', 'align'].includes(dialog.kind)) return { sign: 'confirm' }
         if (dialog || this.active || tool !== 'select') return
         if (pose === 'three') return { sign: 'fit' }
         if (pose === 'horns') return { sign: 'undo' }
@@ -955,6 +1078,21 @@ export class InteractionController {
   command(text: string, source: 'text' | 'voice' = 'text', confidence = 1) {
     const intent = parseIntent(text)
     if (!intent) {
+      const dialog = this.snapshot.dialog
+      if (dialog?.kind === 'creation') {
+        const values = dimensionList(text)
+        if (values && this.canEdit) {
+          const fields = sizeFields(shapeOf(dialog.command)).map(field => field.key)
+          const keys = values.length === fields.length ? fields : dialog.missing
+          if (values.length <= keys.length) this.creationAnswer(dialog, values.map((value, i) => ({ key: keys[i], value })))
+          else this.patch({ dialog: { ...dialog, error: 'Give one value for each requested size.' } })
+          return true
+        }
+      }
+      if (source === 'text' && (dialog?.kind === 'creation' || dialog?.kind === 'dimension' || dialog?.kind === 'extrude')) {
+        this.patch({ dialog: { ...dialog, error: 'Enter a number with an optional unit, such as “25 mm”.' } })
+        return false
+      }
       if (source === 'text') this.error(new Error('Try “create a cube”, “top view”, or “what can I say?”.'))
       return false
     }
@@ -1046,6 +1184,14 @@ export class InteractionController {
   }
 
   private describe(subject: string) {
+    const dialog = this.snapshot.dialog
+    if (dialog?.kind === 'creation') {
+      const target = sizeTarget(shapeOf(dialog.command), subject)
+      if (target) {
+        this.actions.speak('The current ' + subject + ' is ' + formatDimension(target.field.value / target.factor, this.units, this.settings.precision) + '.')
+        return
+      }
+    }
     const object = this.object
     let summary: string
     if (subject === 'selection') {
@@ -1078,19 +1224,20 @@ export class InteractionController {
     const dialog = this.snapshot.dialog
     switch (intent.kind) {
       case 'dimension': {
+        if (dialog?.kind === 'creation') { this.creationAnswer(dialog, [{ key: dialog.missing[0], value: intent.value }]); return }
+        if (dialog?.kind === 'dimension') { void this.drawnAnswer(dialog, dialog.key, intent.value); return }
         if (this.active?.kind === 'draw' && this.snapshot.preview?.kind === 'sketch') {
-          if (intent.value < EPS) throw new Error('Enter a dimension greater than zero.')
+          checkSize(intent.value)
           this.active.exact = intent.value
           const preview = this.snapshot.preview
           this.patch({ preview: { ...preview, snap: undefined, sketch: { ...preview.sketch, geometry: preciseSketchDimension(preview.sketch.geometry, intent.value) } }, message: '' })
           return
         }
-        if (dialog?.kind === 'extrude') { this.active = undefined; void this.finishExtrude(dialog.id, intent.value); return }
+        if (dialog?.kind === 'extrude') { void this.finishExtrude(dialog.id, intent.value); return }
         if (dialog?.kind === 'cut') { this.setCut({ offset: intent.value }); return }
         if (dialog?.kind === 'hole') { this.previewHole({ ...dialog, width: intent.value }); return }
         if (dialog?.kind === 'holePattern') { this.changeFeature('holeDiameter', intent.value); return }
         if (dialog?.kind === 'chamfer') { this.changeFeature('chamferDistance', intent.value); return }
-        if (dialog?.kind === 'dimension') { void this.commit({ type: 'parameter', id: dialog.id, key: dialog.key, value: intent.value }); return }
         if (object && this.lastDimension?.id === object.id && performance.now() - this.lastDimension.time < 90_000) {
           void this.setDimension(object, this.lastDimension.key, intent.value)
           return
@@ -1108,13 +1255,15 @@ export class InteractionController {
         throw new Error('Choose a specific dimension, such as “set diameter to 40”.')
       }
       case 'parameter': {
+        if (dialog?.kind === 'creation') { this.creationAnswer(dialog, [intent]); return }
+        if (dialog?.kind === 'dimension') { void this.drawnAnswer(dialog, intent.key, intent.value, intent.adjustment); return }
         const adjust = (current: number, input = intent.value) => intent.adjustment === 'add' ? current + input :
           intent.adjustment === 'multiply' ? current * input : input
         if (dialog?.kind === 'holePattern' && ['diameter', 'radius'].includes(intent.key)) {
           this.changeFeature('holeDiameter', adjust(dialog.pattern.diameter, intent.key === 'radius' && intent.adjustment !== 'multiply' ? intent.value * 2 : intent.value))
           return
         }
-        if (dialog?.kind === 'extrude' && ['depth', 'height'].includes(intent.key)) { this.previewExtrude({ ...dialog, depth: adjust(dialog.depth) }); return }
+        if (dialog?.kind === 'extrude' && ['depth', 'height'].includes(intent.key)) { void this.finishExtrude(dialog.id, adjust(dialog.depth)); return }
         if (dialog?.kind === 'hole') {
           if (['diameter', 'radius', 'width'].includes(intent.key)) {
             this.previewHole({ ...dialog, width: adjust(dialog.width, intent.key === 'radius' && intent.adjustment !== 'multiply' ? intent.value * 2 : intent.value) }); return
@@ -1126,30 +1275,31 @@ export class InteractionController {
         return
       }
       case 'primitive': {
-        this.cancel()
-        const primitive = primitiveFromIntent(intent, defaultPrimitive(intent.shape))
-        this.patch({ tool: 'select' })
-        void this.commit({ type: 'create', primitive, color: intent.color, at: this.creationPoint() })
+        const initial = defaultPrimitive(intent.shape)
+        const primitive = primitiveFromIntent(intent, initial)
+        const keys = Object.keys(intent.dimensions).map(key => sizeTarget(initial, key)?.field.key ?? key)
+        this.beginCreation({ type: 'create', primitive, color: intent.color, at: this.creationPoint() }, keys)
         return
       }
       case 'line': {
         const direction = this.snapshot.axis && AXES[this.snapshot.axis]
         if (direction && Math.abs(dot(direction, planeNormal(this.frame))) > .9) throw new Error('Choose an axis in the construction plane.')
         const angle = direction ? Math.atan2(dot(direction, this.frame.v), dot(direction, this.frame.u)) / DEG : 0
-        void this.commit({ type: 'sketch', sketch: { frame: this.frame, geometry: { kind: 'line', at: [0, 0], angle, length: intent.length } } })
+        this.beginCreation({ type: 'sketch', sketch: { frame: this.frame, geometry: { kind: 'line', at: [0, 0], angle, length: intent.length ?? 50 } } },
+          intent.length === undefined ? [] : ['length'])
         return
       }
       case 'rectangle': {
-        if (!intent.dimensions) { this.setTool('rectangle'); return }
-        const [width, height] = intent.dimensions
+        const [specifiedWidth, specifiedHeight] = intent.dimensions ?? []
         const line = object?.kind === 'sketch' && object.sketch.geometry.kind === 'line' ? object.sketch.geometry : undefined
         const frame = line && object?.kind === 'sketch' ? object.sketch.frame : this.frame
-        void this.commit({ type: 'sketch', sketch: { frame, geometry: { kind: 'rectangle', at: line?.at ?? [-width / 2, -height / 2], angle: line?.angle ?? 0, width, height } }, source: line ? object?.id : undefined })
+        const width = specifiedWidth ?? line?.length ?? 60, height = specifiedHeight ?? 40
+        const supplied = [specifiedWidth !== undefined || line ? 'width' : '', specifiedHeight !== undefined ? 'height' : '']
+        this.beginCreation({ type: 'sketch', sketch: { frame, geometry: { kind: 'rectangle', at: line?.at ?? [-width / 2, -height / 2], angle: line?.angle ?? 0, width, height } }, source: line ? object?.id : undefined }, supplied)
         return
       }
       case 'circle':
-        if (intent.radius === undefined) this.setTool('circle')
-        else void this.commit({ type: 'sketch', sketch: { frame: this.frame, geometry: { kind: 'circle', at: [0, 0], radius: intent.radius } } })
+        this.beginCreation({ type: 'sketch', sketch: { frame: this.frame, geometry: { kind: 'circle', at: [0, 0], radius: intent.radius ?? 20 } } }, intent.radius === undefined ? [] : ['radius'])
         return
       case 'holePattern': this.beginPattern(intent); return
       case 'patternFace': this.choosePatternFace(intent.face); return

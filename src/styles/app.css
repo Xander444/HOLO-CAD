@@ -258,6 +258,11 @@ button.undo-button:not(:disabled):hover { background: #315567 !important; color:
 select, .dimension-entry input, .rename-form input { height: 32px; color: #e5eef8; background: #111a24; border: 1px solid #3a4d5c; border-radius: 5px; padding: 4px 8px; font-size: 12px }
 select { max-width: 145px }
 .dimension-entry input { width: 100%; font-family: var(--mono); border-color: #8f744f }
+.size-fields { display: grid; gap: 8px; }
+.size-values { display: flex; flex-wrap: wrap; gap: 5px 13px; }
+.size-values > div { display: grid; gap: 2px; padding: 3px 1px; color: var(--muted); font-size: 11px; }
+.size-values strong { color: var(--text); font: 11px var(--mono); }
+.size-values .current, .size-values .current strong { color: var(--amber); }
 .error-inline { margin: 0; color: #f1b5a5; font-size: 11px }
 .error-toast { position: absolute; z-index: 7; top: 60px; left: 13px; right: auto; width: min(420px, calc(100% - 26px)); display: flex; align-items: start; gap: 9px; background: #321f2a; border: 1px solid #8c5559; border-radius: 7px; padding: 10px; box-shadow: 0 8px 28px #0007; color: #f3c0bd; font-size: 12px }
 .error-toast > div { flex: 1 }

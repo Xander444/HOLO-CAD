@@ -1,4 +1,4 @@
-import type { Axis, PlaneName, Primitive, Unit, Vec2, Vec3 } from '../models/project'
+import type { Axis, PlaneName, Primitive, Unit, Vec3 } from '../models/project'
 import { UNIT_FACTORS } from '../models/math'
 import type { FaceDirection } from '../models/features'
 
@@ -9,22 +9,26 @@ const small: Record<string, number> = {
 }
 
 function numberPart(input: string): number | undefined {
-  if (/^[+-]?\s*(?:\d+(?:\.\d*)?|\.\d+)$/.test(input)) return Number(input.replaceAll(' ', ''))
-  const mixed = /^([+-]?\d+\s+)?(\d+)\s*\/\s*(\d+)$/.exec(input)
-  if (mixed) {
-    if (+mixed[3] === 0) return
-    const whole = Number(mixed[1] ?? 0)
-    return whole + (whole < 0 ? -1 : 1) * +mixed[2] / +mixed[3]
+  const signed = /^(minus|negative|positive)\s+(.+)$/.exec(input)
+  if (signed) {
+    if (/^(minus|negative|positive)\b/.test(signed[2])) return
+    const magnitude = numberPart(signed[2])
+    return magnitude === undefined ? undefined : magnitude * (signed[1] === 'positive' ? 1 : -1)
   }
-  const negative = /^(minus|negative)\b/.test(input)
-  const text = input.replace(/^(minus|negative|positive)\s+/, '').replace(/-/g, ' ')
+  if (/^[+-]?\s*(?:\d+(?:\.\d*)?|\.\d+)$/.test(input)) return Number(input.replaceAll(' ', ''))
+  const mixed = /^([+-])?\s*(?:(\d+)\s+)?(\d+)\s*\/\s*(\d+)$/.exec(input)
+  if (mixed) {
+    if (+mixed[4] === 0) return
+    return (mixed[1] === '-' ? -1 : 1) * (Number(mixed[2] ?? 0) + +mixed[3] / +mixed[4])
+  }
+  const text = input.replace(/-/g, ' ')
   const fraction = /(?:(.*?)\s+and\s+)?(a|one|two|three)\s+(half|halves|quarters?)$/.exec(text)
   if (fraction && fraction.index === 0) {
     const whole = fraction[1] ? numberPart(fraction[1]) : 0
     if (whole === undefined) return
-    return (negative ? -1 : 1) * (whole + small[fraction[2]] / (fraction[3].startsWith('hal') ? 2 : 4))
+    return whole + small[fraction[2]] / (fraction[3].startsWith('hal') ? 2 : 4)
   }
-  if (text === 'half' || text === 'a half') return negative ? -.5 : .5
+  if (text === 'half' || text === 'a half') return .5
   const [integer, decimals, ...rest] = text.split(/\s*\bpoint\b\s*/)
   if (rest.length || (!integer && !decimals)) return
   let whole = 0, group = 0, count = 0
@@ -38,7 +42,7 @@ function numberPart(input: string): number | undefined {
   if (!count && !decimals) return
   const digits = decimals?.trim().split(/\s+/).map(word => /^[0-9]+$/.test(word) ? word : small[word] >= 0 && small[word] < 10 ? String(small[word]) : '')
   if (digits?.some(digit => !digit)) return
-  return (negative ? -1 : 1) * (whole + group + (digits ? Number('0.' + digits.join('')) : 0))
+  return whole + group + (digits ? Number('0.' + digits.join('')) : 0)
 }
 
 const aliases: Record<string, Unit> = {
@@ -60,6 +64,15 @@ export function quantity(input: string, mode: 'length' | 'angle' | 'scalar' = 'l
   return number === undefined || !Number.isFinite(number * factor) ? undefined : number * factor
 }
 
+export function dimensionList(input: string) {
+  const parts = input.toLowerCase().trim().replace(/[.!?]+$/, '').split(/\s+(?:by|x)\s+|\s*×\s*|(?<=\d)\s*x\s*(?=[+-]?\d)/)
+  if (parts.length < 2 || parts.length > 3) return
+  const shared = /([a-z]+|["″])$/.exec(parts.at(-1)!)?.[1]
+  const unit = shared && aliases[shared] ? shared : undefined
+  const values = parts.map(part => quantity(unit && quantity(part, 'scalar') !== undefined ? part + ' ' + unit : part))
+  if (values.every(value => value !== undefined)) return values as number[]
+}
+
 export type ViewName = 'isometric' | 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom' | 'fit' | 'reset'
 export type AlignMode = 'center' | 'face' | 'top' | 'left' | 'flush' | Axis
 type Adjustment = 'set' | 'add' | 'multiply'
@@ -76,8 +89,8 @@ export type Intent =
   | { kind: 'dimension'; value: number; raw: string }
   | { kind: 'parameter'; key: string; value: number; adjustment?: Adjustment }
   | { kind: 'primitive'; shape: Primitive['kind']; dimensions: Record<string, number>; color?: string }
-  | { kind: 'line'; length: number }
-  | { kind: 'rectangle'; dimensions?: Vec2 }
+  | { kind: 'line'; length?: number }
+  | { kind: 'rectangle'; dimensions?: [number, number?] }
   | { kind: 'circle'; radius?: number }
   | { kind: 'holePattern'; face?: FeatureFace; diameter?: number; inset?: number }
   | { kind: 'patternFace'; face: FeatureFace }
@@ -98,7 +111,7 @@ export type Intent =
   | { kind: 'changeColor'; color: string }
   | { kind: 'panel'; panel: WorkspacePanel; show: boolean }
   | { kind: 'describe'; subject: 'selection' | 'objects' | string }
-  | { kind: 'tool'; tool: 'select' | 'point' | 'line' | 'polyline' | 'ellipse' | 'arc' | 'move' | 'rotate' | 'scale' | 'measure' }
+  | { kind: 'tool'; tool: 'select' | 'point' | 'line' | 'rectangle' | 'circle' | 'polyline' | 'ellipse' | 'arc' | 'move' | 'rotate' | 'scale' | 'measure' }
   | { kind: 'undo' | 'redo' | 'cancel' | 'confirm' | 'save' | 'saveAs' | 'open' | 'new' | 'fuse' | 'attach' | 'detach' | 'subtract' | 'intersect' | 'snap' | 'both' | 'clearSelection' | 'help' | 'mute' }
 
 const simple: Record<string, Intent['kind']> = {
@@ -106,6 +119,7 @@ const simple: Record<string, Intent['kind']> = {
   delete: 'delete', 'delete selected': 'delete', 'delete it': 'delete', 'delete that': 'delete',
   duplicate: 'duplicate', 'duplicate it': 'duplicate', 'copy that': 'duplicate', 'make a copy': 'duplicate',
   yes: 'confirm', confirm: 'confirm', apply: 'confirm', 'go ahead': 'confirm', 'confirm that': 'confirm',
+  'keep drawn size': 'confirm', 'keep current size': 'confirm', 'use current sizes': 'confirm', 'use suggested sizes': 'confirm',
   no: 'cancel', cancel: 'cancel', stop: 'cancel', 'cancel that': 'cancel', 'never mind': 'cancel', close: 'cancel', 'close dialog': 'cancel',
   save: 'save', 'save project': 'save', 'save as': 'saveAs', 'open project': 'open', 'new project': 'new',
   fuse: 'fuse', union: 'fuse', 'join them': 'fuse', 'fuse them': 'fuse', attach: 'attach', 'attach them': 'attach',
@@ -117,8 +131,15 @@ const simple: Record<string, Intent['kind']> = {
   mute: 'mute', 'mute mic': 'mute', 'mute microphone': 'mute', 'mute the microphone': 'mute', 'stop listening': 'mute',
 }
 const objects = /\b(box|cube|cylinder|sphere|cone|tube|rectangular prism|prism)\b/
-const dimensions = /\b(inner diameter|inner radius|diameter|radius|width|length|height|depth|side|size|angle|sweep)\b/g
-const dimKey = (label: string) => ({ 'inner diameter': 'innerDiameter', 'inner radius': 'innerRadius', side: 'size' }[label] ?? label)
+const primitiveOrder: Record<Primitive['kind'], string[]> = {
+  box: ['width', 'length', 'height'], prism: ['width', 'length', 'height'], cube: ['size'], sphere: ['diameter'],
+  cylinder: ['diameter', 'height'], cone: ['diameter', 'height'], tube: ['diameter', 'innerDiameter', 'height'],
+}
+const dimensions = /\b(inner diameter|outer diameter|bore diameter|inner radius|diameter|radius|width|side length|length|height|depth|side|size|angle|sweep)\b/g
+const dimKey = (label: string) => ({
+  'inner diameter': 'innerDiameter', 'bore diameter': 'innerDiameter', 'outer diameter': 'diameter', 'inner radius': 'innerRadius',
+  side: 'size', 'side length': 'size', 'horizontal radius': 'radiusX', 'x radius': 'radiusX', 'vertical radius': 'radiusY', 'y radius': 'radiusY',
+}[label] ?? label)
 const axis = (value: string) => value.toUpperCase() as Axis
 const colors: Record<string, string> = {
   red: '#d87377', orange: '#e1a563', yellow: '#dfc575', green: '#72c6a2', teal: '#4abfb8',
@@ -261,11 +282,12 @@ export function parseIntent(input: string): Intent | undefined {
     const kind = (shape[1] === 'rectangular prism' ? 'prism' : shape[1]) as Primitive['kind']
     const rest = build.slice(shape.index + shape[0].length).trim().replace(/^(?:with|of|measuring|sized|that's)\s+/, '')
     if (!matches.length && rest) {
-      const measures = rest.split(/\s+(?:by|x|×)\s+/).map(s => quantity(s))
-      if (measures.every(value => value !== undefined) && measures.length === 3 && (kind === 'box' || kind === 'prism')) {
-        ;[values.width, values.length, values.height] = measures as [number, number, number]
-      } else if (measures.length === 1 && measures[0] !== undefined && ['cube', 'sphere'].includes(kind)) {
-        values[kind === 'cube' ? 'size' : 'diameter'] = measures[0]
+      const measures = dimensionList(rest)
+      const single = quantity(rest)
+      const specified = measures ?? (single !== undefined ? [single] : undefined)
+      if (specified) {
+        if (specified.length > primitiveOrder[kind].length) return
+        specified.forEach((value, i) => { values[primitiveOrder[kind][i]] = value })
       } else {
         for (const phrase of rest.split(/\s+and\s+/)) {
           const measure = /^(.+?)\s+(tall|wide|long|deep)$/.exec(phrase)
@@ -283,19 +305,22 @@ export function parseIntent(input: string): Intent | undefined {
     const length = quantity(line[1])
     if (length !== undefined) return { kind: 'line', length }
   }
+  if (/^(?:draw a|create(?: a)?|make(?: a)?) line$/.test(text)) return { kind: 'line' }
+  if (/^(?:draw |tool )?(rectangle|circle)$/.test(text)) return { kind: 'tool', tool: text.endsWith('rectangle') ? 'rectangle' : 'circle' }
   const profile = /^(?:(?:draw|create|make|add)\s+(?:an?\s+)?)?(rectangle|circle)(?:\s+(?:with\s+)?(.*))?$/.exec(text)
   if (profile?.[1] === 'rectangle') {
     if (!profile[2]) return { kind: 'rectangle' }
-    const sides = profile[2].split(/\s+(?:by|x|×)\s+/)
-    const x = quantity(sides[0]), y = quantity(sides[1] ?? '')
-    if (x !== undefined && y !== undefined) return { kind: 'rectangle', dimensions: [x, y] }
+    const sides = dimensionList(profile[2])
+    const width = quantity(profile[2])
+    if (sides?.length === 2) return { kind: 'rectangle', dimensions: [sides[0], sides[1]] }
+    if (width !== undefined) return { kind: 'rectangle', dimensions: [width] }
   }
   if (profile?.[1] === 'circle') {
     if (!profile[2]) return { kind: 'circle' }
-    const radius = quantity(profile[2].replace(/^(radius|diameter)\s+/, ''))
+    const radius = quantity(profile[2].replace(/^(radius|diameter)\s+(?:of\s+)?/, ''))
     if (radius !== undefined) return { kind: 'circle', radius: /diameter/.test(profile[2]) ? radius / 2 : radius }
   }
-  const parameter = /^(?:(?:set|make|change)\s+(?:the\s+)?)?(inner diameter|inner radius|diameter|radius|width|length|height|depth|side|size|angle|sweep)\s+(?:(?:to|of|is)\s+)?(.+)$/.exec(text)
+  const parameter = /^(?:(?:set|make|change)\s+(?:the\s+)?)?(inner diameter|outer diameter|bore diameter|inner radius|diameter|horizontal radius|vertical radius|x radius|y radius|radius|width|side length|length|height|depth|side|size|angle|sweep)\s+(?:(?:to|of|is)\s+)?(.+)$/.exec(text)
   if (parameter) {
     const value = quantity(parameter[2], ['angle', 'sweep'].includes(parameter[1]) ? 'angle' : 'length')
     if (value !== undefined) return { kind: 'parameter', key: dimKey(parameter[1]), value }
@@ -374,10 +399,11 @@ export function parseIntent(input: string): Intent | undefined {
 export function primitiveFromIntent(intent: Extract<Intent, { kind: 'primitive' }>, initial: Primitive): Primitive {
   const primitive = { ...initial } as Primitive
   for (const [property, value] of Object.entries(intent.dimensions)) {
-    const key = property === 'diameter' ? 'radius' : property === 'innerDiameter' ? 'innerRadius' :
+    const diameter = property === 'diameter' || property === 'innerDiameter' || (property === 'width' && 'radius' in primitive)
+    const key = property === 'innerDiameter' ? 'innerRadius' : diameter ? 'radius' :
       primitive.kind === 'cube' && ['width', 'length', 'height'].includes(property) ? 'size' : property
     if (!(key in primitive)) throw new Error(property + ' is unavailable on a ' + primitive.kind + '.')
-    ;(primitive as unknown as Record<string, unknown>)[key] = property.endsWith('iameter') ? value / 2 : value
+    ;(primitive as unknown as Record<string, unknown>)[key] = diameter ? value / 2 : value
   }
   return primitive
 }

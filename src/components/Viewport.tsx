@@ -200,7 +200,7 @@ export function Viewport({ model, controller, interaction, settings, showAdvance
     {sketchHandle(current)}
     {!model.ready && !cameraError && <div className="viewport-center"><span className="loading-mark" /><span>{model.error ? 'CAD initialization stopped' : 'Loading geometry kernel'}</span></div>}
     {cameraError && <div role="alert" className="viewport-center"><TriangleAlert size={24} /><span>3D graphics unavailable</span><small>{cameraError}</small></div>}
-    {model.ready && !model.project.objects.length && !preview && !cameraError && <div className="viewport-center empty-view"><Box size={27} /><span>Start a model</span><small>Choose a primitive or draw a sketch.</small></div>}
+    {model.ready && !model.project.objects.length && !preview && !dialog && !cameraError && <div className="viewport-center empty-view"><Box size={27} /><span>Start a model</span><small>Choose a primitive or draw a sketch.</small></div>}
     <div className="view-bottom">
       <div className="axis-and-tips">
         <div className="axis-widget" aria-label="Axis view shortcuts">

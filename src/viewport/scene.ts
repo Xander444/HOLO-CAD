@@ -463,6 +463,13 @@ export class CadScene implements StagePort {
         if (points.length) { marker(points[0]); if (points.length > 1) marker(points.at(-1)!) }
         break
       }
+      case 'primitive': {
+        const { mesh, color } = preview
+        const solid = new Mesh(fillGeometry(mesh), new MeshStandardMaterial({ color: color ?? 0x65ccdf, transparent: true, opacity: .34, depthWrite: false }))
+        const edges = new LineSegments(edgeGeometry(mesh), new LineBasicMaterial({ color: 0xa2eaef, transparent: true, opacity: .78 }))
+        this.ornaments.add(solid, edges)
+        break
+      }
       case 'extrude': {
         const bottom = path(preview.sketch, preview.transform)
         const top = path(preview.sketch, preview.transform, preview.depth)

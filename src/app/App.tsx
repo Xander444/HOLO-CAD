@@ -13,6 +13,7 @@ import { VoiceDock } from '../components/VoiceDock'
 import { IconButton, Menu, MenuItem } from '../components/ui'
 import { InteractionController } from '../interactions/controller'
 import { defaults, readSettings, storeSettings } from '../interactions/settings'
+import { shapeOf, sizeFields } from '../interactions/sizing'
 import type { Settings } from '../interactions/settings'
 import type { Dialog, Tool } from '../interactions/types'
 import { exampleProject } from '../models/demo'
@@ -40,7 +41,11 @@ const modeLabels = {
 }
 
 function suggestionsFor(dialog?: Dialog) {
-  if (dialog?.kind === 'dimension') return ['Set it to 50', 'Confirm', 'Cancel']
+  if (dialog?.kind === 'creation') {
+    const field = sizeFields(shapeOf(dialog.command)).find(size => size.key === dialog.missing[0])
+    return field ? [Number(field.value.toFixed(3)) + ' mm', 'Use current sizes', 'Cancel'] : []
+  }
+  if (dialog?.kind === 'dimension') return [Number(dialog.value.toFixed(3)) + ' mm', 'Keep drawn size', 'Cancel']
   if (dialog?.kind === 'extrude') return ['Twenty millimeters', 'Confirm', 'Cancel']
   if (dialog?.kind === 'hole') return ['Set diameter to 10', 'Confirm', 'Cancel']
   if (dialog?.kind === 'holePattern') return dialog.face?.rectangle ?
@@ -73,7 +78,7 @@ export function App() {
   const file = useRef<HTMLInputElement>(null)
   const state = useSyncExternalStore(workspace.subscribe, workspace.get)
   const actions = useRef({
-    saveAs: () => {}, open: () => {}, fresh: () => {}, export: (_format: 'step' | 'stl') => {}, speak: (_message: string) => {}, snap: () => {},
+    saveAs: () => {}, open: () => {}, fresh: () => {}, export: (_format: 'step' | 'stl') => {}, speak: (_message: string) => {}, stopPrompt: () => {}, snap: () => {},
     help: () => {}, mute: () => {}, panel: (_panel: WorkspacePanel, _show: boolean) => {},
   })
   const [controller] = useState(() => new InteractionController(workspace, {
@@ -82,6 +87,7 @@ export function App() {
     fresh: () => actions.current.fresh(),
     export: format => actions.current.export(format),
     speak: message => actions.current.speak(message),
+    stopPrompt: () => actions.current.stopPrompt(),
     settings: () => settingsRef.current,
     snap: () => actions.current.snap(),
     commandFocus: () => input.current?.focus(),
@@ -217,6 +223,7 @@ export function App() {
     saveAs: () => { void saveAs() }, open: openLibrary, fresh,
     export: choice => { void exportAs(choice) },
     speak: message => voice.say(message, settingsRef.current.spokenPrompts),
+    stopPrompt: () => voice.stopSpeaking(),
     snap: () => { updateSettings({ snap: true, snapTypes: { ...settingsRef.current.snapTypes, grid: true } }); workspace.notice('Grid snapping enabled') },
     help: () => changeModal('help'), mute: muteVoice, panel: showPanel,
   }
@@ -365,6 +372,7 @@ export function App() {
     {modal === 'settings' && <Modal title="Workspace settings" close={closeModal}>
       <SettingsPanel settings={settings} patch={patch => {
         updateSettings(patch)
+        if (patch.spokenPrompts === false) voice.stopSpeaking()
         if (patch.allowBrowserSpeech !== undefined && !settingsRef.current.voiceMuted) void voice.start({ allowBrowser: patch.allowBrowserSpeech })
       }}
         calibrate={startCalibration} resetCalibration={() => updateSettings({ calibration: defaults.calibration })} />

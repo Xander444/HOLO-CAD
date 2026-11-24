@@ -2,6 +2,7 @@ import { MoveUpRight, Plus } from 'lucide-react'
 import type { BodyGeometry } from '../cad/kernel'
 import type { Dialog, Preview } from '../interactions/types'
 import { snapNames } from '../interactions/snap'
+import { shapeOf, sizeFields } from '../interactions/sizing'
 import type { Entity, Sketch, Transform, Unit, Vec3 } from '../models/project'
 import { add, formatDimension, midpoint, mul, norm, onPlane, planeNormal, sketchPath, sub } from '../models/math'
 import { matrixOf, transformPoint } from '../models/transforms'
@@ -10,6 +11,21 @@ import type { CadScene } from './scene'
 
 type Segment = { from: Vec3; to: Vec3; value: number; label?: string; hint?: string; tone?: 'amber' | 'cyan'; prefix?: string; offset?: number }
 const center = (points: Vec3[]): Vec3 => [0, 1, 2].map(i => (Math.min(...points.map(p => p[i])) + Math.max(...points.map(p => p[i]))) / 2) as Vec3
+
+function primitiveDimension(preview: Extract<Preview, { kind: 'primitive' }>, dialog: Extract<Dialog, { kind: 'creation' }>): Segment[] {
+  const shape = shapeOf(dialog.command)
+  const field = sizeFields(shape).find(size => size.key === dialog.missing[0])
+  if (!field) return []
+  const [low, high] = preview.mesh.bounds
+  const [x, y, z] = midpoint(low, high)
+  const ringHeight = shape.kind === 'sphere' ? z : shape.kind === 'cone' ? low[2] : high[2]
+  const radius = field.value / 2
+  let from: Vec3 = low, to: Vec3 = [high[0], low[1], low[2]]
+  if (field.key === 'height') { from = [high[0], low[1], low[2]]; to = [high[0], low[1], high[2]] }
+  else if (field.key === 'length') { from = [high[0], low[1], low[2]]; to = [high[0], high[1], low[2]] }
+  else if (field.key === 'diameter' || field.key === 'innerDiameter') { from = [x - radius, y, ringHeight]; to = [x + radius, y, ringHeight] }
+  return [{ from, to, label: field.label, value: field.value, tone: 'amber', offset: 23 }]
+}
 
 function sketchDimensions(sketch: Sketch, transform?: Transform, hot?: string): Segment[] {
   const points = sketchPath(sketch)
@@ -39,10 +55,11 @@ function callouts(item: Entity | undefined, mesh: BodyGeometry | undefined, prev
     return [{ from: sub(p, radius), to: add(p, radius), value: preview.diameter, prefix: 'Ø', tone: 'amber', offset: -17 }]
   }
   if (preview?.kind === 'sketch') {
-    const list = sketchDimensions(preview.sketch, preview.transform)
+    const list = sketchDimensions(preview.sketch, preview.transform, dialog?.kind === 'creation' ? dialog.missing[0] : undefined)
     if (preview.label && list[0]) list[0].hint = preview.label
     return list
   }
+  if (preview?.kind === 'primitive' && dialog?.kind === 'creation') return primitiveDimension(preview, dialog)
   if (preview?.kind === 'extrude') {
     const local = center(sketchPath(preview.sketch))
     const from = transformPoint(local, matrixOf(preview.transform))

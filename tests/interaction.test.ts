@@ -118,7 +118,7 @@ test('mock two-hand pinch, rectangle pull and extrusion share exact pointer geom
   frame([hand(1, 'open', [.26, .5]), hand(2, 'open', [.74, .5])], 4)
   await wait()
   assert.equal(controller.get().dialog?.kind, 'dimension')
-  assert.equal(f.spoken[0], 'What length?')
+  assert.equal(f.spoken[0], 'How long should the line be?')
   controller.command('100')
   await wait()
   const line = controller.object
@@ -131,6 +131,7 @@ test('mock two-hand pinch, rectangle pull and extrusion share exact pointer geom
   assert.equal(controller.get().preview?.kind, 'sketch')
   frame([hand(1, 'open', [.51, .27])], 4)
   await wait()
+  assert.equal(f.spoken.at(-1), 'What height should the rectangle have?')
   controller.command('50')
   await wait()
   const rectangle = controller.object
@@ -146,7 +147,12 @@ test('mock two-hand pinch, rectangle pull and extrusion share exact pointer geom
   frame([hand(1, 'pinch', handle)], 12)
   frame([hand(1, 'pinch', [handle[0], handle[1] - .11])], 5)
   assert.equal(controller.get().preview?.kind, 'extrude')
+  const questions = f.spoken.length
   frame([hand(1, 'open', handle)], 4)
+  assert.deepEqual(f.spoken.slice(questions), ['How deep should the extrusion be?'])
+  controller.command('zero')
+  const extrusionPrompt = controller.get().dialog
+  assert.ok(extrusionPrompt?.kind === 'extrude' && extrusionPrompt.error?.includes('nonzero'))
   controller.command('20')
   await wait()
   const result = model.get().project.objects.filter(isBody)[0]
@@ -193,6 +199,8 @@ test('voice phrases and typed quantities set precise cylinder parameters', async
   assert.equal(quantity('two inches'), 50.8)
   assert.equal(quantity('10 centimeters'), 100)
   assert.equal(quantity('-0.025 m'), -25)
+  assert.equal(quantity('minus 12 mm'), -12)
+  assert.equal(quantity('-0 1/2 in'), -12.7)
   assert.equal(quantity('1/0 in'), undefined)
   assert.deepEqual(parseIntent('rotate ninety degrees around X'), { kind: 'rotate', degrees: 90, axis: 'X' })
   assert.deepEqual(parseIntent('Move it to X zero Y ten and Z twenty'), { kind: 'move', delta: [0, 10, 20], absolute: true })
@@ -213,6 +221,108 @@ test('voice phrases and typed quantities set precise cylinder parameters', async
   const repeated = controller.object
   assert.ok(repeated?.kind === 'sketch' && repeated.sketch.geometry.kind === 'line')
   assert.equal(repeated.sketch.geometry.length, 50.8)
+})
+
+test('guided solids ask only for missing sizes, keep a preview, and remember the final answer', async () => {
+  const { controller, model, spoken, wait } = fixture([fixtureBox('Previous')])
+  controller.select('Previous')
+  assert.ok(controller.command('Create a cylinder with diameter thirty millimeters', 'voice', .96))
+  await wait()
+  assert.deepEqual(spoken, ['How tall should the cylinder be?'])
+  assert.equal(controller.get().preview?.kind, 'primitive')
+  assert.equal(model.get().project.objects.length, 1)
+
+  controller.command('How tall is it?', 'voice', .96)
+  assert.match(spoken.at(-1)!, /current height is 36\.00 mm/)
+  controller.command('zero', 'voice', .96)
+  const dialog = controller.get().dialog
+  assert.ok(dialog?.kind === 'creation' && dialog.error)
+  assert.equal(model.get().project.objects.length, 1)
+
+  controller.command('eight centimeters', 'voice', .96)
+  await wait()
+  const body = controller.object
+  assert.ok(body?.kind === 'body' && body.recipe.kind === 'primitive')
+  assert.deepEqual(body.recipe.primitive, { kind: 'cylinder', radius: 15, height: 80 })
+  assert.equal(controller.get().dialog, undefined)
+  assert.equal(model.get().project.objects.length, 2)
+  controller.command('Set that to two inches', 'voice', .96)
+  await wait()
+  const updated = controller.object
+  assert.ok(updated?.kind === 'body' && updated.recipe.kind === 'primitive')
+  assert.deepEqual(updated.recipe.primitive, { kind: 'cylinder', radius: 15, height: 50.8 })
+})
+
+test('compound dimensions share a trailing unit and completed commands skip questions', async () => {
+  const { controller, model, spoken, wait } = fixture()
+  controller.command('Create a red box 4x3x2 inches', 'voice', .96)
+  await wait()
+  assert.deepEqual(spoken, [])
+  const box = controller.object
+  assert.ok(box?.kind === 'body' && box.recipe.kind === 'primitive')
+  assert.deepEqual(box.recipe.primitive, { kind: 'box', width: 101.6, length: 3 * 25.4, height: 50.8 })
+  controller.command('Create a rectangle', 'voice', .96)
+  assert.equal(spoken.at(-1), 'How wide should the rectangle be?')
+  controller.command('two by three centimeters', 'voice', .96)
+  await wait()
+  const rectangle = controller.object
+  assert.ok(rectangle?.kind === 'sketch' && rectangle.sketch.geometry.kind === 'rectangle')
+  assert.deepEqual(rectangle.sketch.geometry, { kind: 'rectangle', width: 20, height: 30, angle: 0, at: [-10, -15] })
+  await model.step('undo')
+  assert.equal(model.get().project.objects.length, 1)
+})
+
+test('toolbar creation can use the suggested sizes or cancel and validates tube diameters', async () => {
+  const { controller, model, frame, wait } = fixture()
+  controller.create('cube')
+  controller.command('Cancel')
+  await wait()
+  assert.equal(controller.get().preview, undefined)
+  assert.equal(model.get().project.objects.length, 0)
+  controller.create('tube')
+  controller.command('20')
+  controller.command('Set bore diameter to 25')
+  const dialog = controller.get().dialog
+  assert.ok(dialog?.kind === 'creation' && dialog.error?.includes('smaller'))
+  assert.equal(model.get().project.objects.length, 0)
+  controller.command('Set the bore diameter to 12')
+  frame([hand(1, 'thumbs-up', [.5, .5])], 20)
+  await wait()
+  const tube = controller.object
+  assert.ok(tube?.kind === 'body' && tube.recipe.kind === 'primitive')
+  assert.deepEqual(tube.recipe.primitive, { kind: 'tube', radius: 10, innerRadius: 6, height: 28 })
+})
+
+test('mouse-drawn rectangles keep the drawn shape and ask for both dimensions', async () => {
+  const { controller, spoken, wait } = fixture()
+  controller.setTool('rectangle')
+  assert.ok(controller.pointerStart([.32, .62]))
+  controller.pointerMove([.62, .36])
+  controller.pointerEnd()
+  await wait()
+  const drawn = controller.object
+  assert.ok(drawn?.kind === 'sketch' && drawn.sketch.geometry.kind === 'rectangle')
+  assert.deepEqual(spoken, ['How wide should the rectangle be?'])
+  controller.command('Four centimeters', 'voice', .96)
+  await wait()
+  assert.deepEqual(spoken, ['How wide should the rectangle be?', 'What height should the rectangle have?'])
+  controller.command('Keep drawn size', 'voice', .96)
+  assert.equal(controller.get().dialog, undefined)
+  const sized = controller.object
+  assert.ok(sized?.kind === 'sketch' && sized.sketch.geometry.kind === 'rectangle')
+  assert.equal(sized.sketch.geometry.width, 40)
+  assert.equal(sized.sketch.geometry.height, drawn.sketch.geometry.height)
+})
+
+test('repeated polyline clicks keep distinct points and clicking the start closes the profile', async () => {
+  const { controller, wait } = fixture()
+  controller.setTool('polyline')
+  for (const point of [[.35, .4], [.35, .4], [.55, .4], [.55, .55], [.35, .4]] as ScreenPoint[]) controller.click(point, false)
+  await wait()
+  const sketch = controller.object
+  assert.ok(sketch?.kind === 'sketch' && sketch.sketch.geometry.kind === 'polyline')
+  assert.equal(sketch.sketch.geometry.closed, true)
+  assert.equal(sketch.sketch.geometry.points.length, 3)
 })
 
 test('center on a picked face uses exact planar support and a preview', async () => {

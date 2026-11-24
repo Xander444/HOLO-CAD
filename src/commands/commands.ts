@@ -43,6 +43,9 @@ function body(project: Project, id: string): Body {
 }
 
 export function validateSketch({ geometry: g }: Sketch) {
+  const coords = 'at' in g ? g.at : g.points.flat()
+  coords.forEach(ensureFinite)
+  for (const value of Object.values(g)) if (typeof value === 'number') ensureFinite(value)
   if (g.kind === 'polyline') {
     if (g.points.length < (g.closed ? 3 : 2)) throw new Error('Add more points to this polyline.')
     for (const [i, p] of g.points.entries()) if (i > 0 && Math.hypot(p[0] - g.points[i - 1][0], p[1] - g.points[i - 1][1]) < EPS) {
@@ -77,7 +80,8 @@ export function applyFeature(target: Body, command: FeatureCommand): Body {
 }
 
 type Editable = Primitive | Geometry
-function changeNumeric<T extends Editable>(value: T, key: string, input: number): T {
+export function changeNumeric<T extends Editable>(value: T, key: string, input: number): T {
+  ensureFinite(input)
   if (key === 'diameter') { key = 'radius'; input /= 2 }
   if (key === 'innerDiameter') { key = 'innerRadius'; input /= 2 }
   if (value.kind === 'cube' && ['width', 'length', 'height'].includes(key)) key = 'size'

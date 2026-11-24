@@ -65,6 +65,7 @@ export class VoiceSession {
   private generation = 0
   private requested = false
   private speaking = false
+  private speechSequence = 0
   private failures = 0
   private retry?: () => void
   private startTimeout?: () => void
@@ -179,33 +180,57 @@ export class VoiceSession {
   private reconnect(delay: number) {
     this.disconnect()
     if (!this.requested || this.speaking) return
-    this.retry?.()
+    this.cancelRetry()
     this.status({ kind: 'reconnecting' })
-    this.retry = this.runtime.schedule(() => this.connect(), delay)
+    this.retry = this.runtime.schedule(() => {
+      this.retry = undefined
+      this.connect()
+    }, delay)
   }
 
   private block(message: string) {
+    this.cancelRetry()
     this.disconnect()
     this.status({ kind: 'blocked', message })
   }
 
   say(message: string, enabled: boolean) {
-    if (!enabled || !this.requested || !this.connection || !this.engine) return
+    if (!enabled || !this.requested || !this.connection || !(this.engine || this.speaking || this.retry)) return
+    const sequence = ++this.speechSequence
+    const replacing = this.speaking
     this.speaking = true
     const id = this.generation
-    this.retry?.()
+    this.cancelRetry()
+    this.speechTimeout?.()
     this.disconnect()
+    if (replacing) this.runtime.cancelSpeech()
     const finished = () => {
-      if (id !== this.generation || !this.speaking) return
+      if (id !== this.generation || sequence !== this.speechSequence || !this.speaking) return
       this.speechTimeout?.()
+      this.speechTimeout = undefined
       this.speaking = false
-      this.reconnect(320)
+      this.reconnect(220)
     }
     this.status({ kind: 'speaking' })
     this.speechTimeout = this.runtime.schedule(finished, Math.max(5_000, message.length * 105))
     try {
       if (!this.runtime.speak(message, finished)) finished()
     } catch { finished() }
+  }
+
+  stopSpeaking() {
+    if (!this.speaking) return
+    this.speaking = false
+    this.speechSequence++
+    this.speechTimeout?.()
+    this.speechTimeout = undefined
+    this.runtime.cancelSpeech()
+    this.reconnect(220)
+  }
+
+  private cancelRetry() {
+    this.retry?.()
+    this.retry = undefined
   }
 
   private disconnect() {
@@ -222,7 +247,7 @@ export class VoiceSession {
     this.generation++
     this.requested = this.speaking = false
     this.failures = 0
-    this.retry?.()
+    this.cancelRetry()
     this.speechTimeout?.()
     this.disconnect()
     this.connection = undefined

@@ -4,6 +4,7 @@ import type { CornerPattern, EdgeReference, RectangularFace } from '../models/fe
 import type { AlignMode, ViewName } from '../voice/parser'
 import type { ScreenPoint, TrackedHand } from '../vision/tracking'
 import type { Snap } from './snap'
+import type { NewShape } from './sizing'
 
 export type Tool = 'select' | 'point' | 'line' | 'rectangle' | 'circle' | 'ellipse' | 'arc' | 'polyline' | 'primitive' |
   'extrude' | 'move' | 'rotate' | 'scale' | 'cut' | 'hole' | 'holePattern' | 'chamfer' | 'union' | 'subtract' | 'intersect' | 'attach' | 'measure'
@@ -13,6 +14,7 @@ export type Mode = 'Idle' | 'Hover' | 'Selection' | 'DrawingLine' | 'DrawingRect
 export type CutChoice = PlaneName | 'view' | 'custom'
 export type Preview =
   | { kind: 'sketch'; sketch: Sketch; transform?: Transform; label?: string; snap?: Snap }
+  | { kind: 'primitive'; mesh: BodyGeometry; color?: string }
   | { kind: 'extrude'; sketch: Sketch; transform: Transform; depth: number }
   | { kind: 'move'; target: string; ids: string[]; from: Transform; to: Transform; snap?: Snap; danger?: boolean; fromHand?: boolean }
   | { kind: 'cut'; frame: Frame; bounds: Bounds; body: string; meshes?: BodyGeometry[]; line?: ScreenPoint[] }
@@ -21,8 +23,9 @@ export type Preview =
   | { kind: 'holePattern'; face: RectangularFace; points: Vec3[]; diameter: number }
   | { kind: 'chamfer'; edge: PickedEdge; mesh?: BodyGeometry }
   | { kind: 'orbit'; at: ScreenPoint }
-export type Dimension = { kind: 'dimension'; id: string; key: string; label: string; value: number }
-export type Extrusion = { kind: 'extrude'; id: string; depth: number }
+export type Dimension = { kind: 'dimension'; id: string; key: string; label: string; value: number; remaining: string[]; error?: string }
+export type Creation = { kind: 'creation'; command: NewShape; missing: string[]; error?: string }
+export type Extrusion = { kind: 'extrude'; id: string; depth: number; error?: string }
 export type Cut = { kind: 'cut'; id: string; plane: Frame; choice: CutChoice; offset: number; error?: string }
 export type Hole = { kind: 'hole'; id: string; face: FaceReference; at: Vec3; mode: 'through' | 'blind' | 'rectangular'; width: number; height: number; depth: number }
 type FeaturePhase = 'choosing' | 'checking' | 'ready' | 'invalid'
@@ -31,7 +34,7 @@ export type Chamfer = { kind: 'chamfer'; id: string; edge: PickedEdge; distance:
 export type FeatureDraft = HolePattern | Chamfer
 export type Alignment = { kind: 'align'; target: string; reference: string; mode: AlignMode; position: Vec3; face?: FaceReference; choice?: boolean }
 export type Join = { kind: 'join'; target: string; reference: string; position: Vec3; face?: FaceReference }
-export type Dialog = Dimension | Extrusion | Cut | Hole | Alignment | Join | FeatureDraft |
+export type Dialog = Creation | Dimension | Extrusion | Cut | Hole | Alignment | Join | FeatureDraft |
   { kind: 'delete'; ids: string[] } | { kind: 'boolean'; operation: BooleanKind; target: string; tool: string } |
   { kind: 'confirm'; question: string; action: () => void } | { kind: 'voice'; question: string; action: () => void }
 

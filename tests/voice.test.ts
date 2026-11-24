@@ -145,6 +145,26 @@ test('the assistant stops the recognizer for prompts, resumes afterward, and hon
   assert.equal(f.statuses.at(-1)?.kind, 'muted')
 })
 
+test('a new size question replaces stale speech and can start during microphone recovery', async () => {
+  const f = fixture()
+  await f.voice.start({ allowBrowser: false })
+  f.voice.say('How wide should the box be?', true)
+  f.voice.say('How long should the box be?', true)
+  f.prompts[0].finish()
+  f.tick(400)
+  assert.equal(f.engines.length, 1)
+  assert.equal(f.statuses.at(-1)?.kind, 'speaking')
+  f.prompts[1].finish()
+  assert.equal(f.statuses.at(-1)?.kind, 'reconnecting')
+  f.voice.say('How tall should the box be?', true)
+  assert.equal(f.prompts.length, 3)
+  f.voice.stopSpeaking()
+  f.prompts[2].finish()
+  f.tick(400)
+  assert.equal(f.engines.length, 2)
+  assert.equal(f.statuses.at(-1)?.kind, 'listening')
+})
+
 test('permission denial stays paused until an explicit retry', async () => {
   const f = fixture()
   await f.voice.start({ allowBrowser: false })

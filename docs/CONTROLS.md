@@ -38,6 +38,7 @@ A unique word from the object name is enough. If two objects match, the assistan
 | Create a tube with a bore | **Create a tube with diameter 64 and inner diameter 38** |
 | Create a dimensioned line | **Draw a line 100 millimeters** |
 | Make a rectangular or circular sketch | **Create rectangle 100 by 50**, **Create a circle with diameter 40** |
+| Ask for the sizes as you go | **Create a cylinder with diameter 30**, **Draw a line**, **Create a rectangle** |
 | Open a sketch or measure tool | **Draw point**, **Draw line**, **Draw polyline**, **Draw rectangle**, **Draw circle**, **Draw ellipse**, **Draw arc**, **Measure** |
 | Extrude a closed sketch | **Extrude 25**, **Extrude it by minus ten**, **Extrude the rectangle by twenty** |
 | Open extrusion preview | **Extrude**, then say a signed number for the depth |
@@ -45,7 +46,9 @@ A unique word from the object name is enough. If two objects match, the assistan
 | Adjust a dimension | **Increase its height by 10**, **Make it taller by five**, **Make it five millimeters wider**, **Make it twice as tall** |
 | Follow up on a dimension | **Set that to 45**, **Two inches**, **Twelve point five** |
 
-Dimensions accept millimeters, centimeters, meters, and inches. A length without a unit uses millimeters. Angles default to degrees. Spoken numbers and fractions include **one hundred and twenty** and **one and a half inches**. Supported colors are red, orange, yellow, green, teal, cyan, blue, purple, pink, white, gray, and black. Some sketches and measurements use the camera or mouse to locate geometry.
+When a new solid or voice-created sketch needs sizes, HOLO-CAD asks one question at a time and highlights the requested dimension. Say **Thirty millimeters**, give a named size such as **Set height to 80**, or type in the prompt and press Enter. **Use current sizes** creates the preview. Fully sized commands create the shape immediately. A trailing unit in **4 by 3 by 2 inches** applies to all three numbers.
+
+Dimensions accept millimeters, centimeters, meters, and inches. A spoken number or number in the command dock uses millimeters unless you say a unit. The size field in the prompt uses the displayed project unit. Angles default to degrees. Spoken numbers and fractions include **one hundred and twenty** and **one and a half inches**. Supported colors are red, orange, yellow, green, teal, cyan, blue, purple, pink, white, gray, and black.
 
 ### Place and reshape parts
 
@@ -96,9 +99,9 @@ Turn on **Hands** next to Settings and allow camera access. Move a hand to aim t
 | One pinch | Hold a thumb–index pinch over an object, then release to select. |
 | Point and hold | Extend only your index finger, point at a visible object, and hold steady in **Select**. |
 | Point at an edge and speak | Hold one finger near the middle of one exposed edge until it highlights. Keep pointing and say **Chamfer this by 2 mm**. Review the preview and say **Apply**. |
-| Two pinches and spread | Pinch thumb to index on both hands while **Select** or **Line** is active. Spread, then release both pinches close together to draw a line. |
+| Two pinches and spread | Pinch thumb to index on both hands while **Select** or **Line** is active. Spread, then release both pinches close together. Say the exact length when asked, or say **Keep drawn size**. |
 | Pinch a selected line and pull | Pull perpendicular to the line to make a rectangle. Release and set the height. |
-| Pinch the extrusion handle | Select a closed sketch. Pull its handle and release. Confirm the depth or say an exact signed value. |
+| Pinch the extrusion handle | Select a closed sketch. Pull its handle and release. When asked for depth, say a signed value or give a thumbs-up to apply the preview. |
 | Close two raised fingers and trace an arc | Hold index and middle fingers close together and trace a small arc to orbit the camera. Release to stop. |
 | Open hand, then fist | Hover over a solid, close your hand into a fist, and move. Open your hand to place it. |
 | Grab and drag offscreen | Move the fist beyond the viewport until the red boundary appears. Open your hand to request deletion. Confirm separately. |
